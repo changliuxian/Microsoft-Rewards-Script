@@ -23,6 +23,8 @@ export interface ConfigSaveFingerprint {
 
 export interface ConfigSearchSettings {
     useGeoLocaleQueries: boolean;
+    defaultLang: string;
+    defaultGeo: string;
     scrollRandomResults: boolean;
     clickRandomResults: boolean;
     searchDelay: ConfigSearchDelay;

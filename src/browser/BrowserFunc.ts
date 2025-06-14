@@ -1,6 +1,6 @@
 import { BrowserContext, Page } from 'rebrowser-playwright'
 import { CheerioAPI, load } from 'cheerio'
-import { AxiosRequestConfig } from 'axios'
+import axios,{ AxiosRequestConfig } from 'axios'
 
 import { MicrosoftRewardsBot } from '../index'
 import { saveSessionData } from '../util/Load'
@@ -208,16 +208,14 @@ export default class BrowserFunc {
                 'Gamification_Sapphire_DailyCheckIn'
             ]
 
-            const data = await this.getDashboardData()
-            let geoLocale = data.userProfile.attributes.country
-            geoLocale = (this.bot.config.searchSettings.useGeoLocaleQueries && geoLocale.length === 2) ? geoLocale.toLowerCase() : 'us'
+            const [, geo] = await this.getGeoLocale()
 
             const userDataRequest: AxiosRequestConfig = {
                 url: 'https://prod.rewardsplatform.microsoft.com/dapi/me?channel=SAAndroid&options=613',
                 method: 'GET',
                 headers: {
                     'Authorization': `Bearer ${accessToken}`,
-                    'X-Rewards-Country': geoLocale,
+                    'X-Rewards-Country': geo.toLocaleLowerCase(),
                     'X-Rewards-Language': 'en'
                 }
             }
@@ -342,6 +340,28 @@ export default class BrowserFunc {
 
         return selector
     }
+
+    async getGeoLocale(): Promise<[string, string]> {
+        const defaultLang = this.bot.config.searchSettings.defaultLang
+        const defaultGeo = this.bot.config.searchSettings.defaultGeo
+
+        if (!this.bot.config.searchSettings.useGeoLocaleQueries) {
+            return [defaultLang, defaultGeo]
+        }
+
+        try {
+            const response = await axios.get('https://ipapi.co/json/')
+            const nfo = response.data
+            const lang = (nfo.languages as string)?.split(',')[0] ?? defaultLang
+            const geo = (nfo.country as string) ?? defaultGeo
+            return [lang, geo]
+        } catch (error) {
+// 根据错误信息，`this.bot.log` 的第一个参数类型不匹配，这里假设使用 `this.bot.isMobile` 作为第一个参数
+this.bot.log(this.bot.isMobile, 'GET-GEOLOCALE', 'An error occurred: ' + error, 'error')
+            return [defaultLang, defaultGeo]
+        }
+    }
+
 
     async closeBrowser(browser: BrowserContext, email: string) {
         try {
