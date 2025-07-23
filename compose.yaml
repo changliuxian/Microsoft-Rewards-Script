@@ -4,29 +4,29 @@ services:
     container_name: microsoft-rewards-script
     restart: unless-stopped
 
-    # Volume mounts: Specify a location where you want to save the files on your local machine.
+    # 卷挂载：指定您想要在本地机器上保存文件的位置。
     volumes:
       - ./src/accounts.json:/usr/src/microsoft-rewards-script/dist/accounts.json:ro
       - ./src/config.json:/usr/src/microsoft-rewards-script/dist/config.json:ro
-      - ./sessions:/usr/src/microsoft-rewards-script/dist/browser/sessions # Optional, saves your login session
+      - ./sessions:/usr/src/microsoft-rewards-script/dist/browser/sessions # 可选，保存您的登录会话
 
     environment:
-      TZ: "Asia/Shanghai" # Set your timezone for proper scheduling
+      TZ: "Asia/Shanghai" # 设置您的时区以便正确调度
       NODE_ENV: "production"
-      CRON_SCHEDULE: "0 7,16,20 * * *" # Customize your schedule, use crontab.guru for formatting
-      RUN_ON_START: "true" # Runs the script on container startup
+      CRON_SCHEDULE: "0 7,16,20 * * *" # 自定义您的计划，使用crontab.guru进行格式化
+      RUN_ON_START: "true" # 在容器启动时运行脚本
 
-      # Start-time randomization (uncomment to customize or disable)
+      # 启动时间随机化（取消注释以自定义或禁用）
       #MIN_SLEEP_MINUTES: "5"
       #MAX_SLEEP_MINUTES: "50"
-      SKIP_RANDOM_SLEEP: "false"
+      SKIP_RANDOM_SLEEP: "false" # 跳过随机睡眠
 
-    # Optional resource limits for the container
+    # 容器的可选资源限制
     mem_limit: 4g
     cpus: 2
 
-    # Health check - monitors if cron daemon is running to ensure scheduled jobs can execute
-    # Container marked unhealthy if cron process dies
+    # 健康检查 - 监控cron守护进程是否运行以确保计划任务可以执行
+    # 如果cron进程死亡，容器将被标记为不健康
     healthcheck:
       test: ["CMD", "sh", "-c", "pgrep cron > /dev/null || exit 1"]
       interval: 60s
@@ -34,6 +34,6 @@ services:
       retries: 3
       start_period: 30s
     
-    # Security hardening
+    # 安全加固
     security_opt:
       - no-new-privileges:true
