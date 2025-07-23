@@ -1,0 +1,49 @@
+{
+    "baseURL": "https://rewards.bing.com",
+    "sessionPath": "sessions",
+    "headless": true,
+    "parallel": false,
+    "runOnZeroPoints": false,
+    "clusters": 1,
+    "saveFingerprint": {
+        "mobile": true,
+        "desktop": true
+    },
+    "workers": {
+        "doDailySet": true,
+        "doMorePromotions": true,
+        "doPunchCards": true,
+        "doDesktopSearch": true,
+        "doMobileSearch": true,
+        "doDailyCheckIn": true,
+        "doReadToEarn": true
+    },
+    "searchOnBingLocalQueries": false,
+    "globalTimeout": "30s",
+    "searchSettings": {
+        "useGeoLocaleQueries": true,
+        "defaultLang": "zh-CN",
+        "defaultGeo": "CN",
+        "scrollRandomResults": true,
+        "clickRandomResults": true,
+        "searchDelay": {
+            "min": "1min",
+            "max": "3min"
+        },
+        "retryMobileSearchAmount": 2
+    },
+    "logExcludeFunc": [
+        "SEARCH-CLOSE-TABS"
+    ],
+    "webhookLogExcludeFunc": [
+        "SEARCH-CLOSE-TABS"
+    ],
+    "proxy": {
+        "proxyGoogleTrends": true,
+        "proxyBingTerms": true
+    },
+    "webhook": {
+        "enabled": false,
+        "url": ""
+    }
+}
