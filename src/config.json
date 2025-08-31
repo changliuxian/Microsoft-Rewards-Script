@@ -6,8 +6,8 @@
     "runOnZeroPoints": false,
     "clusters": 1,
     "saveFingerprint": {
-        "mobile": true,
-        "desktop": true
+        "mobile": false,
+        "desktop": false
     },
     "workers": {
         "doDailySet": true,
