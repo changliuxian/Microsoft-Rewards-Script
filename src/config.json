@@ -39,8 +39,8 @@
         "SEARCH-CLOSE-TABS"
     ],
     "proxy": {
-        "proxyGoogleTrends": true,
-        "proxyBingTerms": true
+        "proxyGoogleTrends": false,
+        "proxyBingTerms": false
     },
     "webhook": {
         "enabled": false,
