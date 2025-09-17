@@ -1,5 +1,5 @@
 services:
-  netsky:
+  microsoft-rewards-script:
     build: .
     container_name: microsoft-rewards-script
     restart: unless-stopped
@@ -14,13 +14,15 @@ services:
       TZ: "Asia/Shanghai" # 设置您的时区以便正确调度
       NODE_ENV: "production"
       CRON_SCHEDULE: "0 7,16,20 * * *" # 自定义您的计划，使用crontab.guru进行格式化
-      RUN_ON_START: "true" # 在容器启动时运行脚本
+      RUN_ON_START: "true" # Runs the script immediately on container startup
 
-      # 启动时间随机化（取消注释以自定义或禁用）
+      # Add scheduled start-time randomization (uncomment to customize or disable, default: enabled)
       #MIN_SLEEP_MINUTES: "5"
       #MAX_SLEEP_MINUTES: "50"
       SKIP_RANDOM_SLEEP: "false" # 跳过随机睡眠
 
+      # Optionally set how long to wait before killing a stuck script run (prevents blocking future runs, default: 8 hours)
+      #STUCK_PROCESS_TIMEOUT_HOURS: "8"
     # 容器的可选资源限制
     mem_limit: 4g
     cpus: 2
