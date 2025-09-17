@@ -2,7 +2,6 @@
 set -euo pipefail
 
 export PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
-
 export TZ="${TZ:-UTC}"
 
 cd /usr/src/microsoft-rewards-script
@@ -135,7 +134,6 @@ MINWAIT=${MIN_SLEEP_MINUTES:-5}
 MAXWAIT=${MAX_SLEEP_MINUTES:-50}
 MINWAIT_SEC=$((MINWAIT*60))
 MAXWAIT_SEC=$((MAXWAIT*60))
-
 
 if [ "${SKIP_RANDOM_SLEEP:-false}" != "true" ]; then
     SLEEPTIME=$(( MINWAIT_SEC + RANDOM % (MAXWAIT_SEC - MINWAIT_SEC) ))

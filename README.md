@@ -42,7 +42,6 @@ Under development, however mainly for personal use!
 A basic docker `compose.yaml` is provided. Follow these steps to configure and run the container:
 
 1. **Set Your Timezone:** Adjust the `TZ` variable to ensure correct scheduling.
-
 3. **Customize the Schedule:**
    - Modify `CRON_SCHEDULE` to set run times. Use [crontab.guru](https://crontab.guru) for help.
    - **Note:** The container adds 5–50 minutes of random variability to each scheduled start time. This can be optionally disabled or customized in the compose file.
