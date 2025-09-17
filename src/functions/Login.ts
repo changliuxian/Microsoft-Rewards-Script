@@ -357,7 +357,7 @@ export class Login {
                 await skipButton.click()
                 this.bot.log(this.bot.isMobile, 'DISMISS-ALL-LOGIN-MESSAGES', 'Dismissed "Use Passkey" modal via data-testid=secondaryButton')
                 await page.waitForTimeout(500)
-                                handledPasskey = true
+                handledPasskey = true
             }
         }
 
