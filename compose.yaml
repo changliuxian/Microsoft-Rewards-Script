@@ -19,7 +19,7 @@ services:
       # Add scheduled start-time randomization (uncomment to customize or disable, default: enabled)
       MIN_SLEEP_MINUTES: "5"
       MAX_SLEEP_MINUTES: "50"
-      SKIP_RANDOM_SLEEP: "true" # 跳过随机睡眠
+      SKIP_RANDOM_SLEEP: "false" # 跳过随机睡眠
 
       # Optionally set how long to wait before killing a stuck script run (prevents blocking future runs, default: 8 hours)
       #STUCK_PROCESS_TIMEOUT_HOURS: "8"
