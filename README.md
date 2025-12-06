@@ -80,16 +80,17 @@ npm run start
 
 ## Nix Setup
 
-If using Nix:
-```bash
-./run.sh
-```
+1. Run the pre-build step first:
+   ```bash
+   npm run pre-build
+   ```
 
-The script will:
-- Run `npm run pre-build` to install dependencies and Chromium  
-- Then start the script headlessly using `xvfb-run`
+2. Then start the script:
+   ```bash
+   ./run.sh
+   ```
 
----
+This will launch the script headlessly using `xvfb-run`.
 
 ## Docker Setup
 
