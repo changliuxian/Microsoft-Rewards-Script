@@ -1,7 +1,13 @@
 import type { AxiosRequestConfig } from 'axios'
 import * as fs from 'fs'
 import path from 'path'
-import type { GoogleSearch, GoogleTrendsResponse, RedditListing, WikipediaTopResponse } from '../interface/Search'
+import type {
+    GoogleSearch,
+    GoogleTrendsResponse,
+    RedditListing,
+    WikipediaTopResponse,
+    CNTrends
+} from '../interface/Search'
 import type { MicrosoftRewardsBot } from '../index'
 import { QueryEngine } from '../interface/Config'
 
@@ -17,13 +23,18 @@ export class QueryCore {
             geoLocale?: string
         } = {}
     ): Promise<string[]> {
-        const {
+        let {
             shuffle = false,
             sourceOrder = ['google', 'wikipedia', 'reddit', 'local'],
             related = true,
             langCode = 'en',
             geoLocale = 'US'
         } = options
+
+        if (geoLocale === 'CN') {
+            sourceOrder = ['customCN', 'local']
+            this.bot.logger.debug(this.bot.isMobile, 'QUERY-MANAGER', `CN geoLocale detected, overriding sourceOrder to ${sourceOrder.join(',')}`)
+        }
 
         try {
             this.bot.logger.debug(
@@ -35,7 +46,7 @@ export class QueryCore {
             const topicLists: string[][] = []
 
             const sourceHandlers: Record<
-                'google' | 'wikipedia' | 'reddit' | 'local',
+                'google' | 'wikipedia' | 'reddit' | 'local' | 'customCN',
                 (() => Promise<string[]>) | (() => string[])
             > = {
                 google: async () => {
@@ -56,6 +67,11 @@ export class QueryCore {
                 local: () => {
                     const topics = this.getLocalQueryList()
                     this.bot.logger.debug(this.bot.isMobile, 'QUERY-MANAGER', `local: ${topics.length}`)
+                    return topics
+                },
+                customCN: async () => {
+                    const topics = await this.getCustomCNTrends().catch(() => [])
+                    this.bot.logger.debug(this.bot.isMobile, 'QUERY-MANAGER', `customCN: ${topics.length}`)
                     return topics
                 }
             }
@@ -476,6 +492,40 @@ export class QueryCore {
                 `read/parse failed | error=${
                     error instanceof Error ? `${error.name}: ${error.message}\n${error.stack ?? ''}` : String(error)
                 }`
+            )
+            return []
+        }
+    }
+
+    private async getCustomCNTrends(): Promise<string[]> {
+        try {
+            this.bot.logger.debug(this.bot.isMobile, 'SEARCH-CN-TRENDS', 'Generating search queries from custom CN source')
+
+            const request: AxiosRequestConfig = {
+                url: 'https://news.zpa666.top/api/douyin?limit=100&cache=false',
+                method: 'GET',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            }
+
+            const response = await this.bot.axios.request(request, this.bot.config.proxy.queryEngine)
+            const data = response.data as CNTrends
+
+            if (data.code !== 200) {
+                this.bot.logger.warn(this.bot.isMobile, 'SEARCH-CN-TRENDS', `Custom CN source returned non-200 code: ${data.code}`)
+                return []
+            }
+
+            const topics = data.data?.map(topic => topic.title.toLowerCase()) ?? []
+            this.bot.logger.debug(this.bot.isMobile, 'SEARCH-CN-TRENDS', `Got ${topics.length} topics from custom CN source`)
+
+            return topics
+        } catch (error) {
+            this.bot.logger.error(
+                this.bot.isMobile,
+                'SEARCH-CN-TRENDS',
+                `An error occurred: ${error instanceof Error ? `${error.name}: ${error.message}` : String(error)}`
             )
             return []
         }

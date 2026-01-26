@@ -114,3 +114,27 @@ export interface RedditListing {
         }>
     }
 }
+
+export interface CNTrends {
+    code: number
+    name: string
+    title: string
+    type: string
+    link: string
+    total: number
+    updateTime: string
+    fromCache: boolean
+    data: CNTrendItem[]
+}
+
+export interface CNTrendItem {
+    id: number
+    title: string
+    desc: string
+    cover: string
+    author: string
+    timestamp: string | null
+    hot: number
+    url: string
+    mobileUrl: string
+}

@@ -4,8 +4,8 @@
         "password": "password_1",
         "totpSecret": "",
         "recoveryEmail": "",
-        "geoLocale": "auto",
-        "langCode": "en",
+        "geoLocale": "CN",
+        "langCode": "cn",
         "proxy": {
             "proxyAxios": false,
             "url": "",
@@ -23,8 +23,8 @@
         "password": "password_2",
         "totpSecret": "",
         "recoveryEmail": "",
-        "geoLocale": "auto",
-        "langCode": "en",
+        "geoLocale": "CN",
+        "langCode": "cn",
         "proxy": {
             "proxyAxios": false,
             "url": "",
