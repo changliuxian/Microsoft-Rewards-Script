@@ -1,6 +1,7 @@
 services:
     microsoft-rewards-script:
         build: .
+        image: netsky
         container_name: microsoft-rewards-script
         restart: unless-stopped
 
@@ -11,7 +12,7 @@ services:
             - ./sessions:/usr/src/microsoft-rewards-script/dist/browser/sessions
 
         environment:
-            TZ: 'America/Toronto' # Set your timezone for proper scheduling
+            TZ: 'Asia/Shanghai' # Set your timezone for proper scheduling
             NODE_ENV: 'production'
             CRON_SCHEDULE: '0 7 * * *' # Customize your schedule, use crontab.guru for formatting
             RUN_ON_START: 'true' # Runs the script immediately on container startup
