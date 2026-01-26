@@ -15,7 +15,7 @@ export interface Config {
     webhook: ConfigWebhook
 }
 
-export type QueryEngine = 'google' | 'wikipedia' | 'reddit' | 'local'
+export type QueryEngine = 'google' | 'wikipedia' | 'reddit' | 'local' | 'customCN'
 
 export interface ConfigSearchSettings {
     scrollRandomResults: boolean
