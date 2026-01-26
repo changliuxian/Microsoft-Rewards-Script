@@ -1,16 +1,19 @@
-import ms from 'ms'
+import ms, { StringValue } from 'ms'
 
 export default class Util {
+    async wait(time: number | string): Promise<void> {
+        if (typeof time === 'string') {
+            time = this.stringToNumber(time)
+        }
 
-    async wait(ms: number): Promise<void> {
-        return new Promise<void>((resolve) => {
-            setTimeout(resolve, ms)
+        return new Promise<void>(resolve => {
+            setTimeout(resolve, time)
         })
     }
 
     getFormattedDate(ms = Date.now()): string {
         const today = new Date(ms)
-        const month = String(today.getMonth() + 1).padStart(2, '0')  // January is 0
+        const month = String(today.getMonth() + 1).padStart(2, '0') // January is 0
         const day = String(today.getDate()).padStart(2, '0')
         const year = today.getFullYear()
 
@@ -18,9 +21,19 @@ export default class Util {
     }
 
     shuffleArray<T>(array: T[]): T[] {
-        return array.map(value => ({ value, sort: Math.random() }))
-            .sort((a, b) => a.sort - b.sort)
-            .map(({ value }) => value)
+        for (let i = array.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1))
+
+            const a = array[i]
+            const b = array[j]
+
+            if (a === undefined || b === undefined) continue
+
+            array[i] = b
+            array[j] = a
+        }
+
+        return array
     }
 
     randomNumber(min: number, max: number): number {
@@ -39,12 +52,39 @@ export default class Util {
         return chunks
     }
 
-    stringToMs(input: string | number): number {
-        const milisec = ms(input.toString())
-        if (!milisec) {
-            throw new Error('The string provided cannot be parsed to a valid time! Use a format like "1 min", "1m" or "1 minutes"')
+    stringToNumber(input: string | number): number {
+        if (typeof input === 'number') {
+            return input
         }
+        const value = input.trim()
+
+        const milisec = ms(value as StringValue)
+
+        if (milisec === undefined) {
+            throw new Error(
+                `The input provided (${input}) cannot be parsed to a valid time! Use a format like "1 min", "1m" or "1 minutes"`
+            )
+        }
+
         return milisec
     }
 
+    normalizeString(string: string): string {
+        return string
+            .normalize('NFD')
+            .trim()
+            .toLowerCase()
+            .replace(/[^\x20-\x7E]/g, '')
+            .replace(/[?!]/g, '')
+    }
+
+    getEmailUsername(email: string): string {
+        return email.split('@')[0] ?? 'Unknown'
+    }
+
+    randomDelay(min: string | number, max: string | number): number {
+        const minMs = typeof min === 'number' ? min : this.stringToNumber(min)
+        const maxMs = typeof max === 'number' ? max : this.stringToNumber(max)
+        return Math.floor(this.randomNumber(minMs, maxMs))
+    }
 }

@@ -1,7 +1,7 @@
 ###############################################################################
 # Stage 1: Builder
 ###############################################################################
-FROM node:22-slim AS builder
+FROM node:24-slim AS builder
 
 WORKDIR /usr/src/microsoft-rewards-script
 
@@ -23,13 +23,13 @@ RUN rm -rf node_modules \
     && npm cache clean --force
 
 # Install Chromium Headless Shell, and cleanup
-RUN npx playwright install --with-deps --only-shell chromium \
+RUN npx patchright install --with-deps --only-shell chromium \
     && rm -rf /root/.cache /tmp/* /var/tmp/*
 
 ###############################################################################
 # Stage 2: Runtime
 ###############################################################################
-FROM node:22-slim AS runtime
+FROM node:24-slim AS runtime
 
 WORKDIR /usr/src/microsoft-rewards-script
 
@@ -80,10 +80,9 @@ COPY --from=builder /usr/src/microsoft-rewards-script/package*.json ./
 COPY --from=builder /usr/src/microsoft-rewards-script/node_modules ./node_modules
 
 # Copy runtime scripts with proper permissions from the start
-COPY --chmod=755 src/run_daily.sh ./src/run_daily.sh
+COPY --chmod=755 scripts/docker/run_daily.sh ./scripts/docker/run_daily.sh
 COPY --chmod=644 src/crontab.template /etc/cron.d/microsoft-rewards-cron.template
-COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
-
+COPY --chmod=755 scripts/docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 
 # Entrypoint handles TZ, initial run toggle, cron templating & launch
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
