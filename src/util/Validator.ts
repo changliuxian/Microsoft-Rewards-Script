@@ -20,7 +20,7 @@ const DelaySchema = z.object({
     max: NumberOrString
 })
 
-const QueryEngineSchema = z.enum(['google', 'wikipedia', 'reddit', 'local'])
+const QueryEngineSchema = z.enum(['google', 'wikipedia', 'reddit', 'local', 'customCN'])
 
 // Webhook
 const WebhookSchema = z.object({
