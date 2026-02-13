@@ -172,6 +172,37 @@ export class Workers {
         this.bot.logger.info(this.bot.isMobile, 'SPECIAL-ACTIVITY', 'All "Special Activites" items have been completed')
     }
 
+    public async doPunchCards(data: DashboardData, page: Page) {
+        const punchCards: PunchCard[] =
+            data.punchCards.filter(x => !x.parentPromotion.complete && x.parentPromotion.pointProgressMax > 0) ?? []
+
+        const punchCardActivities = punchCards.flatMap(x => x.childPromotions)
+
+        const activitiesUncompleted: BasePromotion[] =
+            punchCardActivities?.filter(x => {
+                if (x.complete) return false
+                if (x.exclusiveLockedFeatureStatus === 'locked') return false
+                if (!x.promotionType) return false
+
+                return true
+            }) ?? []
+
+        if (!activitiesUncompleted.length) {
+            this.bot.logger.info(this.bot.isMobile, 'PUNCHCARD', 'All "Punch Card" items have already been completed')
+            return
+        }
+
+        this.bot.logger.info(
+            this.bot.isMobile,
+            'PUNCHCARD',
+            `Started solving ${activitiesUncompleted.length} "Punch Card" items`
+        )
+
+        await this.solveActivities(activitiesUncompleted, page)
+
+        this.bot.logger.info(this.bot.isMobile, 'PUNCHCARD', 'All "Punch Card" items have been completed')
+    }
+
     private async solveActivities(activities: BasePromotion[], page: Page, punchCard?: PunchCard) {
         for (const activity of activities) {
             try {

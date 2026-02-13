@@ -1,4 +1,5 @@
 import type { AxiosRequestConfig } from 'axios'
+import { randomBytes } from 'crypto'
 import type { Page } from 'patchright'
 import * as fs from 'fs'
 import path from 'path'
@@ -33,11 +34,8 @@ export class SearchOnBing extends Workers {
 
         try {
             this.cookieHeader = this.bot.browser.func.buildCookieHeader(
-                this.bot.isMobile ? this.bot.cookies.mobile : this.bot.cookies.desktop, [
-                    'bing.com',
-                    'live.com',
-                    'microsoftonline.com'
-                ]
+                this.bot.isMobile ? this.bot.cookies.mobile : this.bot.cookies.desktop,
+                ['bing.com', 'live.com', 'microsoftonline.com']
             )
 
             const fingerprintHeaders = { ...this.bot.fingerprint.headers }
@@ -105,7 +103,10 @@ export class SearchOnBing extends Workers {
             try {
                 this.bot.logger.debug(this.bot.isMobile, 'SEARCH-ON-BING-SEARCH', `Processing query | query="${query}"`)
 
-                await this.bot.mainMobilePage.goto(this.bingHome)
+                const cvid = randomBytes(16).toString('hex')
+                const url = `${this.bingHome}/search?q=${encodeURIComponent(query)}&PC=U531&FORM=ANNTA1&cvid=${cvid}`
+
+                await this.bot.mainMobilePage.goto(url)
 
                 // Wait until page loaded
                 await page.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {})

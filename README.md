@@ -1,5 +1,12 @@
 [![Discord](https://img.shields.io/badge/Join%20Our%20Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/8BxYbV4pkj)
 
+
+> [!CAUTION]
+> V3.x does not support the new Bing Rewards interface!
+> 
+> Use at your own risk — some features may not work as expected.
+
+
 ---
 
 ## Table of Contents
@@ -70,7 +77,7 @@ If using Nix: `bash scripts/nix/run.sh`
 
 ---
 
-## Configuration Reference
+## Configuration Options
 
 Edit `src/config.json` to customize behavior. Below are all currently available options.
 
@@ -84,7 +91,6 @@ Edit `src/config.json` to customize behavior. Below are all currently available 
 | `baseURL`                  | string  | `"https://rewards.bing.com"` | Microsoft Rewards base URL            |
 | `sessionPath`              | string  | `"sessions"`                 | Directory to store browser sessions   |
 | `headless`                 | boolean | `false`                      | Run browser invisibly                 |
-| `runOnZeroPoints`          | boolean | `false`                      | Run even when no points are available |
 | `clusters`                 | number  | `1`                          | Number of concurrent account clusters |
 | `errorDiagnostics`         | boolean | `false`                      | Enable error diagnostics              |
 | `searchOnBingLocalQueries` | boolean | `false`                      | Use local query list                  |

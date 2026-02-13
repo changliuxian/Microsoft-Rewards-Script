@@ -1,4 +1,5 @@
 import type { Page } from 'patchright'
+import { randomBytes } from 'crypto'
 import type { Counters, DashboardData } from '../../../interface/DashboardData'
 
 import { QueryCore } from '../../QueryEngine'
@@ -276,7 +277,10 @@ export class Search extends Workers {
 
             this.bot.logger.debug(isMobile, 'SEARCH-BING', `Returning home to refresh state | url=${this.bingHome}`)
 
-            await searchPage.goto(this.bingHome)
+            const cvid = randomBytes(16).toString('hex')
+            const url = `${this.bingHome}/search?q=${encodeURIComponent(query)}&PC=U531&FORM=ANNTA1&cvid=${cvid}`
+
+            await searchPage.goto(url)
             await searchPage.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {})
             await this.bot.browser.utils.tryDismissAllMessages(searchPage)
         }

@@ -22,7 +22,7 @@
         "scrollRandomResults": false,
         "clickRandomResults": false,
         "parallelSearching": true,
-        "queryEngines": ["google", "wikipedia", "reddit", "local", "customCN"],
+        "queryEngines": ["google", "wikipedia", "reddit", "local","customCN"],
         "searchResultVisitTime": "10sec",
         "searchDelay": {
             "min": "30sec",

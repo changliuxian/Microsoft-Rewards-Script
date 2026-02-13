@@ -49,7 +49,6 @@ export const ConfigSchema = z.object({
     baseURL: z.string(),
     sessionPath: z.string(),
     headless: z.boolean(),
-    runOnZeroPoints: z.boolean(),
     clusters: z.number().int().nonnegative(),
     errorDiagnostics: z.boolean(),
     workers: z.object({

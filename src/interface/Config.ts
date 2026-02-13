@@ -2,7 +2,6 @@ export interface Config {
     baseURL: string
     sessionPath: string
     headless: boolean
-    runOnZeroPoints: boolean
     clusters: number
     errorDiagnostics: boolean
     workers: ConfigWorkers
