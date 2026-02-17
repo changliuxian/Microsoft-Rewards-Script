@@ -12,7 +12,7 @@ permissions:
     packages: write
 
 env:
-    REGISTRY: ghcr.io  
+    REGISTRY: ghcr.io
 
 jobs:
     deploy:
@@ -39,15 +39,13 @@ jobs:
                   echo "current=$CUR_VERSION" >> "$GITHUB_OUTPUT"
                   echo "LOG: Current version: $CUR_VERSION"
 
-
             - name: Check if GitHub Release already exists
               id: relcheck
-              if: steps.check.outputs.should_release == 'true'
               env:
                   GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
               run: |
                   set -euo pipefail
-                  TAG="v${{ steps.versions.outputs.current }}"
+                  TAG="v${{ steps.version.outputs.current }}"
                   echo "LOG: Checking GitHub Release for tag: $TAG"
 
                   set +e
@@ -64,7 +62,7 @@ jobs:
                   fi
 
             - name: Create GitHub Release
-              if: steps.relcheck.outputs.exists != 'true'              
+              if: steps.relcheck.outputs.exists != 'true'
               uses: softprops/action-gh-release@v2
               with:
                   tag_name: v${{ steps.version.outputs.current }}
@@ -111,7 +109,7 @@ jobs:
               uses: docker/setup-buildx-action@v3
 
             - name: Build and push Docker image
-              if: steps.imgcheck.outputs.exists != 'true'              
+              if: steps.imgcheck.outputs.exists != 'true'
               uses: docker/build-push-action@v5
               with:
                   context: .
