@@ -29,25 +29,25 @@ jobs:
                   set -euo pipefail
                   IMG="$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')"
                   echo "name=$IMG" >> "$GITHUB_OUTPUT"
-                  echo "LOG: Using image name: ${{ env.REGISTRY }}/$IMG"
+                  echo "LOG: Image: ${{ env.REGISTRY }}/$IMG"
 
             - name: Read versions
               id: versions
               run: |
                   set -euo pipefail
 
-                  CUR_VERSION=$(node -p "require('./package.json').version")
+                  CUR_VERSION="$(node -p "require('./package.json').version")"
                   echo "current=$CUR_VERSION" >> "$GITHUB_OUTPUT"
-                  echo "LOG: Current version found in package.json: $CUR_VERSION"
+                  echo "LOG: Current version: $CUR_VERSION"
 
 
-                  PREV_TAG=$(git tag --list "v*" --sort=-v:refname | head -n 1 || true)
+                  PREV_TAG="$(git tag --list "v*" --sort=-v:refname | head -n 1 || true)"
                   if [ -z "${PREV_TAG:-}" ]; then
                     PREV_VERSION=""
-                    echo "LOG: No previous tag found"
+                    echo "LOG: Previous tag: <none>"
                   else
                     PREV_VERSION="${PREV_TAG#v}"
-                    echo "LOG: Previous tag found: $PREV_TAG (version $PREV_VERSION)"
+                    echo "LOG: Previous tag: $PREV_TAG (version $PREV_VERSION)"
                   fi
 
                   echo "previous=$PREV_VERSION" >> "$GITHUB_OUTPUT"
@@ -56,8 +56,8 @@ jobs:
               id: check
               run: |
                   set -euo pipefail
-                  echo "LOG: Running semantic version comparison"
-                  echo "LOG: Compare current=${{ steps.versions.outputs.current }} against previous=${{ steps.versions.outputs.previous || '<none>' }}"
+
+                  echo "LOG: Comparing current=${{ steps.versions.outputs.current }} previous=${{ steps.versions.outputs.previous || '<none>' }}"
 
                   node - <<'NODE' >> "$GITHUB_OUTPUT"
                   const cur = process.env.CUR;
@@ -80,16 +80,10 @@ jobs:
                   const b = parse(prev);
 
                   let should = false;
-
-                  if (!a) {
-                    should = false;
-                  } else if (!prev) {
-                    should = true;
-                  } else if (a && b) {
-                    should = gt(a, b);
-                  } else {
-                    should = cur !== prev;                    
-                  }
+                  if (!a) should = false;
+                  else if (!prev) should = true;
+                  else if (a && b) should = gt(a, b);
+                  else should = cur !== prev;
 
                   console.log(`should_release=${should}`);
                   NODE
@@ -102,17 +96,41 @@ jobs:
                   echo "LOG: should_release=${{ steps.check.outputs.should_release }}"
 
 
-            - name: GitHub Release
+            - name: Stop if no bump
+              if: steps.check.outputs.should_release != 'true'
+              run: |
+                  echo "LOG: No version increase detected. Stopping."
+
+            - name: Check if GitHub Release already exists
+              id: relcheck
               if: steps.check.outputs.should_release == 'true'
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  set -euo pipefail
+                  TAG="v${{ steps.versions.outputs.current }}"
+                  echo "LOG: Checking GitHub Release for tag: $TAG"
+
+                  set +e
+                  gh api "repos/${{ github.repository }}/releases/tags/$TAG" >/dev/null 2>&1
+                  CODE=$?
+                  set -e
+
+                  if [ "$CODE" -eq 0 ]; then
+                    echo "LOG: Release exists for $TAG"
+                    echo "exists=true" >> "$GITHUB_OUTPUT"
+                  else
+                    echo "LOG: Release does not exist for $TAG"
+                    echo "exists=false" >> "$GITHUB_OUTPUT"
+                  fi
+
+            - name: Create GitHub Release
+              if: steps.check.outputs.should_release == 'true' && steps.relcheck.outputs.exists != 'true'              
               uses: softprops/action-gh-release@v2
               with:
                   tag_name: v${{ steps.versions.outputs.current }}
                   name: v${{ steps.versions.outputs.current }}
                   generate_release_notes: true
-
-            - name: Set up Docker Buildx
-              if: steps.check.outputs.should_release == 'true'
-              uses: docker/setup-buildx-action@v3
 
             - name: Log in to GHCR
               if: steps.check.outputs.should_release == 'true'
@@ -122,8 +140,41 @@ jobs:
                   username: ${{ github.actor }}
                   password: ${{ secrets.GITHUB_TOKEN }}
 
-            - name: Build and push Docker image
+            - name: Check if Docker image tag already exists
+              id: imgcheck
               if: steps.check.outputs.should_release == 'true'
+              run: |
+                  set -euo pipefail
+                  IMAGE="${{ env.REGISTRY }}/${{ steps.image.outputs.name }}"
+                  TAG="${{ steps.versions.outputs.current }}"
+                  REF="$IMAGE:$TAG"
+
+                  echo "LOG: Checking image manifest: $REF"
+
+                  set +e
+                  docker manifest inspect "$REF" >/dev/null 2>&1
+                  CODE=$?
+                  set -e
+
+                  if [ "$CODE" -eq 0 ]; then
+                    echo "LOG: Image tag exists: $REF"
+                    echo "exists=true" >> "$GITHUB_OUTPUT"
+                  else
+                    echo "LOG: Image tag does not exist: $REF"
+                    echo "exists=false" >> "$GITHUB_OUTPUT"
+                  fi
+
+            - name: Stop if Docker image already exists
+              if: steps.check.outputs.should_release == 'true' && steps.imgcheck.outputs.exists == 'true'
+              run: |
+                  echo "LOG: Docker image already exists for version ${{ steps.versions.outputs.current }}. Nothing to do."
+
+            - name: Set up Docker Buildx
+              if: steps.check.outputs.should_release == 'true' && steps.imgcheck.outputs.exists != 'true'
+              uses: docker/setup-buildx-action@v3
+
+            - name: Build and push Docker image
+              if: steps.check.outputs.should_release == 'true' && steps.imgcheck.outputs.exists != 'true'              
               uses: docker/build-push-action@v5
               with:
                   context: .
