@@ -31,75 +31,14 @@ jobs:
                   echo "name=$IMG" >> "$GITHUB_OUTPUT"
                   echo "LOG: Image: ${{ env.REGISTRY }}/$IMG"
 
-            - name: Read versions
-              id: versions
+            - name: Read current version
+              id: version
               run: |
                   set -euo pipefail
-
                   CUR_VERSION="$(node -p "require('./package.json').version")"
                   echo "current=$CUR_VERSION" >> "$GITHUB_OUTPUT"
                   echo "LOG: Current version: $CUR_VERSION"
 
-
-                  PREV_TAG="$(git tag --list "v*" --sort=-v:refname | head -n 1 || true)"
-                  if [ -z "${PREV_TAG:-}" ]; then
-                    PREV_VERSION=""
-                    echo "LOG: Previous tag: <none>"
-                  else
-                    PREV_VERSION="${PREV_TAG#v}"
-                    echo "LOG: Previous tag: $PREV_TAG (version $PREV_VERSION)"
-                  fi
-
-                  echo "previous=$PREV_VERSION" >> "$GITHUB_OUTPUT"
-
-            - name: Version comparison
-              id: check
-              run: |
-                  set -euo pipefail
-
-                  echo "LOG: Comparing current=${{ steps.versions.outputs.current }} previous=${{ steps.versions.outputs.previous || '<none>' }}"
-
-                  node - <<'NODE' >> "$GITHUB_OUTPUT"
-                  const cur = process.env.CUR;
-                  const prev = process.env.PREV;
-
-                  function parse(v) {
-                    if (!v) return null;
-                    const m = String(v).trim().replace(/^v/, "").match(/^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/);
-                    return m ? m.slice(1, 4).map(Number) : null;
-                  }
-
-                  function gt(a, b) {
-                    for (let i = 0; i < 3; i++) {
-                      if (a[i] !== b[i]) return a[i] > b[i];
-                    }
-                    return false;
-                  }
-
-                  const a = parse(cur);
-                  const b = parse(prev);
-
-                  let should = false;
-                  if (!a) should = false;
-                  else if (!prev) should = true;
-                  else if (a && b) should = gt(a, b);
-                  else should = cur !== prev;
-
-                  console.log(`should_release=${should}`);
-                  NODE
-              env:
-                  CUR: ${{ steps.versions.outputs.current }}
-                  PREV: ${{ steps.versions.outputs.previous }}
-
-            - name: Logging decision
-              run: |
-                  echo "LOG: should_release=${{ steps.check.outputs.should_release }}"
-
-
-            - name: Stop if no bump
-              if: steps.check.outputs.should_release != 'true'
-              run: |
-                  echo "LOG: No version increase detected. Stopping."
 
             - name: Check if GitHub Release already exists
               id: relcheck
@@ -125,15 +64,14 @@ jobs:
                   fi
 
             - name: Create GitHub Release
-              if: steps.check.outputs.should_release == 'true' && steps.relcheck.outputs.exists != 'true'              
+              if: steps.relcheck.outputs.exists != 'true'              
               uses: softprops/action-gh-release@v2
               with:
-                  tag_name: v${{ steps.versions.outputs.current }}
-                  name: v${{ steps.versions.outputs.current }}
+                  tag_name: v${{ steps.version.outputs.current }}
+                  name: v${{ steps.version.outputs.current }}
                   generate_release_notes: true
 
             - name: Log in to GHCR
-              if: steps.check.outputs.should_release == 'true'
               uses: docker/login-action@v3
               with:
                   registry: ${{ env.REGISTRY }}
@@ -142,11 +80,10 @@ jobs:
 
             - name: Check if Docker image tag already exists
               id: imgcheck
-              if: steps.check.outputs.should_release == 'true'
               run: |
                   set -euo pipefail
                   IMAGE="${{ env.REGISTRY }}/${{ steps.image.outputs.name }}"
-                  TAG="${{ steps.versions.outputs.current }}"
+                  TAG="${{ steps.version.outputs.current }}"
                   REF="$IMAGE:$TAG"
 
                   echo "LOG: Checking image manifest: $REF"
@@ -165,22 +102,22 @@ jobs:
                   fi
 
             - name: Stop if Docker image already exists
-              if: steps.check.outputs.should_release == 'true' && steps.imgcheck.outputs.exists == 'true'
+              if: steps.imgcheck.outputs.exists == 'true'
               run: |
-                  echo "LOG: Docker image already exists for version ${{ steps.versions.outputs.current }}. Nothing to do."
+                  echo "LOG: Docker image already exists for version ${{ steps.version.outputs.current }}. Nothing to do."
 
             - name: Set up Docker Buildx
-              if: steps.check.outputs.should_release == 'true' && steps.imgcheck.outputs.exists != 'true'
+              if: steps.imgcheck.outputs.exists != 'true'
               uses: docker/setup-buildx-action@v3
 
             - name: Build and push Docker image
-              if: steps.check.outputs.should_release == 'true' && steps.imgcheck.outputs.exists != 'true'              
+              if: steps.imgcheck.outputs.exists != 'true'              
               uses: docker/build-push-action@v5
               with:
                   context: .
                   push: true
                   tags: |
-                      ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}:${{ steps.versions.outputs.current }}
+                      ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}:${{ steps.version.outputs.current }}
                       ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}:latest
                   cache-from: type=gha
                   cache-to: type=gha,mode=max
