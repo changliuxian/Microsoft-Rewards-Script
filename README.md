@@ -1,5 +1,5 @@
 [![Discord](https://img.shields.io/badge/Join%20Our%20Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/8BxYbV4pkj)
-[![Docker Release](https://img.shields.io/github/actions/workflow/status/TheNetsky/Microsoft-Rewards-Script/docker-release.yml?branch=v3&style=for-the-badge&label=Docker%20Release)](https://github.com/TheNetsky/Microsoft-Rewards-Script/actions/workflows/docker-release.yml)
+[![Docker Release](https://img.shields.io/github/actions/workflow/status/TheNetsky/Microsoft-Rewards-Script/auto-release.yml?branch=v3&style=for-the-badge&label=Latest%20Build)](https://github.com/TheNetsky/Microsoft-Rewards-Script/actions/workflows/auto-release.yml)
 
 > [!CAUTION]
 > V3.x does not support the new Bing Rewards interface!
