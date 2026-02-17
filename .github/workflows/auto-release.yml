@@ -28,24 +28,30 @@ jobs:
               id: versions
               run: |
                   set -euo pipefail
+
                   CUR_VERSION=$(node -p "require('./package.json').version")
                   echo "current=$CUR_VERSION" >> "$GITHUB_OUTPUT"
                   echo "LOG: Current version found in package.json: $CUR_VERSION"
 
 
-                  PREV_VERSION=$(git show HEAD~1:package.json 2>/dev/null | node -p "JSON.parse(require('fs').readFileSync(0,'utf8')).version" || echo "")
-                  echo "previous=$PREV_VERSION" >> "$GITHUB_OUTPUT"
-                  if [ -z "$PREV_VERSION" ]; then
-                    echo "LOG: No previous version found in git history"
+                  PREV_TAG=$(git tag --list "v*" --sort=-v:refname | head -n 1 || true)
+                  if [ -z "${PREV_TAG:-}" ]; then
+                    PREV_VERSION=""
+                    echo "LOG: No previous tag found"
                   else
-                    echo "LOG: Previous version found in git history: $PREV_VERSION"
+                    PREV_VERSION="${PREV_TAG#v}"
+                    echo "LOG: Previous tag found: $PREV_TAG (version $PREV_VERSION)"
                   fi
+
+                  echo "previous=$PREV_VERSION" >> "$GITHUB_OUTPUT"
 
             - name: Version comparison
               id: check
               run: |
                   set -euo pipefail
                   echo "LOG: Running semantic version comparison"
+                  echo "LOG: Compare current=${{ steps.versions.outputs.current }} against previous=${{ steps.versions.outputs.previous || '<none>' }}"
+
                   node - <<'NODE' >> "$GITHUB_OUTPUT"
                   const cur = process.env.CUR;
                   const prev = process.env.PREV;
@@ -67,10 +73,15 @@ jobs:
                   const b = parse(prev);
 
                   let should = false;
-                  if (!prev && a) {
+
+                  if (!a) {
+                    should = false;
+                  } else if (!prev) {
                     should = true;
                   } else if (a && b) {
                     should = gt(a, b);
+                  } else {
+                    should = cur !== prev;                    
                   }
 
                   console.log(`should_release=${should}`);
@@ -81,7 +92,7 @@ jobs:
 
             - name: Logging decision
               run: |
-                  echo "LOG: Release decision is ${{ steps.check.outputs.should_release }}"
+                  echo "LOG: should_release=${{ steps.check.outputs.should_release }}"
 
 
             - name: GitHub Release
