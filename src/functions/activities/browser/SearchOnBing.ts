@@ -237,7 +237,7 @@ export class SearchOnBing extends Workers {
             if (this.bot.config.searchOnBingLocalQueries) {
                 this.bot.logger.debug(this.bot.isMobile, 'SEARCH-ON-BING-QUERY', 'Using local queries config file')
 
-                const data = fs.readFileSync(path.join(__dirname, '../bing-search-activity-queries.json'), 'utf8')
+                const data = fs.readFileSync(path.join(__dirname, '../../bing-search-activity-queries.json'), 'utf8')
                 queries = JSON.parse(data)
 
                 this.bot.logger.debug(
