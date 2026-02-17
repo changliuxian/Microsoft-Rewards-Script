@@ -6,6 +6,7 @@ services:
         restart: unless-stopped
 
         # Create and customize your accounts.json and config.json prior to deploying the container (default location: /src/)
+        # Default paths assume you've cloned the repo. Advanced users can point to files anywhere on their system.
         volumes:
             - ./src/accounts.json:/usr/src/microsoft-rewards-script/dist/accounts.json:ro
             - ./src/config.json:/usr/src/microsoft-rewards-script/dist/config.json:ro
