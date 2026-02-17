@@ -12,8 +12,7 @@ permissions:
     packages: write
 
 env:
-    REGISTRY: ghcr.io
-    IMAGE_NAME: ${{ github.repository }}    
+    REGISTRY: ghcr.io  
 
 jobs:
     deploy:
@@ -23,6 +22,14 @@ jobs:
               uses: actions/checkout@v4
               with:
                   fetch-depth: 0
+
+            - name: Normalize image name (lowercase)
+              id: image
+              run: |
+                  set -euo pipefail
+                  IMG="$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')"
+                  echo "name=$IMG" >> "$GITHUB_OUTPUT"
+                  echo "LOG: Using image name: ${{ env.REGISTRY }}/$IMG"
 
             - name: Read versions
               id: versions
@@ -122,7 +129,7 @@ jobs:
                   context: .
                   push: true
                   tags: |
-                      ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.versions.outputs.current }}
-                      ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+                      ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}:${{ steps.versions.outputs.current }}
+                      ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}:latest
                   cache-from: type=gha
                   cache-to: type=gha,mode=max
