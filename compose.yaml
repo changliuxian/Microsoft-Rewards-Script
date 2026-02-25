@@ -5,28 +5,66 @@ services:
         container_name: microsoft-rewards-script
         restart: unless-stopped
 
-        # Create and customize your accounts.json and config.json prior to deploying the container (default location: /src/)
-        # Default paths assume you've cloned the repo. Advanced users can point to files anywhere on their system.
         volumes:
-            - ./src/accounts.json:/usr/src/microsoft-rewards-script/dist/accounts.json:ro
-            - ./src/config.json:/usr/src/microsoft-rewards-script/dist/config.json:ro
+            - ./config:/usr/src/microsoft-rewards-script/dist/config
             - ./sessions:/usr/src/microsoft-rewards-script/dist/browser/sessions
 
         environment:
-            TZ: 'Asia/Shanghai' # Set your timezone for proper scheduling
+            # ── Scheduling ───────────────────────────────────────────────────
+            TZ: 'Asia/Shanghai'
             NODE_ENV: 'production'
-            CRON_SCHEDULE: '0 7 * * *' # Customize your schedule, use crontab.guru for formatting
-            RUN_ON_START: 'true' # Runs the script immediately on container startup
-
-            # Add a small random delay to the scheduled start time (uncomment to customize delay, or disable)
+            CRON_SCHEDULE: '0 7 * * *'   # use crontab.guru to customize your schedule
+            RUN_ON_START: 'true'          # run script immediately on container start
+            SKIP_RANDOM_SLEEP: 'false'
             #MIN_SLEEP_MINUTES: "5"
             #MAX_SLEEP_MINUTES: "50"
-            SKIP_RANDOM_SLEEP: 'false'
+            #STUCK_PROCESS_TIMEOUT_HOURS: "8"  
 
-            # Set a timeout for stuck script runs (default: 8h, uncomment to customize)
-            #STUCK_PROCESS_TIMEOUT_HOURS: "8"
+            # ── Accounts ─────────────────────────────────────────────────────
+            ACCOUNT_1_EMAIL: ${ACCOUNT_1_EMAIL}
+            ACCOUNT_1_PASSWORD: ${ACCOUNT_1_PASSWORD}
+            #ACCOUNT_1_TOTP_SECRET: ${ACCOUNT_1_TOTP_SECRET}
+            #ACCOUNT_1_RECOVERY_EMAIL: ${ACCOUNT_1_RECOVERY_EMAIL}
+            #ACCOUNT_1_GEO_LOCALE: ${ACCOUNT_1_GEO_LOCALE}
+            #ACCOUNT_1_LANG_CODE: ${ACCOUNT_1_LANG_CODE}
+            #ACCOUNT_1_PROXY_AXIOS: ${ACCOUNT_1_PROXY_AXIOS}
+            #ACCOUNT_1_PROXY_URL: ${ACCOUNT_1_PROXY_URL}
+            #ACCOUNT_1_PROXY_PORT: ${ACCOUNT_1_PROXY_PORT}
+            #ACCOUNT_1_PROXY_USERNAME: ${ACCOUNT_1_PROXY_USERNAME}
+            #ACCOUNT_1_PROXY_PASSWORD: ${ACCOUNT_1_PROXY_PASSWORD}
+            #
+            #ACCOUNT_2_EMAIL: ${ACCOUNT_2_EMAIL}
+            #ACCOUNT_2_PASSWORD: ${ACCOUNT_2_PASSWORD}
+            # Add additional accounts as ACCOUNT_3_*, ACCOUNT_4_*, etc. following the same pattern
 
-        # Health check: ensures cron is running, container marked unhealthy if cron stops
+            # ── Configuration ───────────────────────────────────────────────
+            # Uncomment to override defaults, a full list of configuration options are in the README.
+            # 
+            # General:
+            #CONFIG_CLUSTERS: '1'
+            #
+            # Search behaviour:
+            #CONFIG_SEARCH_DELAY_MIN: '30sec'
+            #CONFIG_SEARCH_DELAY_MAX: '1min'
+            #
+            # Discord webhook:
+            #CONFIG_DISCORD_ENABLED: 'true'
+            #CONFIG_DISCORD_URL: 'https://discord.com/api/webhooks/...'
+            #
+            # ntfy webhook:
+            #CONFIG_NTFY_ENABLED: 'true'
+            #CONFIG_NTFY_URL: 'https://ntfy.sh'
+            #CONFIG_NTFY_TOPIC: 'my-rewards-alerts'
+            #CONFIG_NTFY_TOKEN: ''
+            #CONFIG_NTFY_TITLE: 'Microsoft-Rewards-Script'
+            #CONFIG_NTFY_PRIORITY: '3'
+            #
+            # Webhook log filter (controls which events trigger webhook notifications, enable when using NTFY):
+            #CONFIG_WEBHOOK_LOG_FILTER_ENABLED: 'false'
+            #CONFIG_WEBHOOK_LOG_FILTER_MODE: 'whitelist'      # whitelist or blacklist
+            #CONFIG_WEBHOOK_LOG_FILTER_LEVELS: 'error'        # comma-separated
+            #CONFIG_WEBHOOK_LOG_FILTER_KEYWORDS: 'starting account,select number,collected'
+
         healthcheck:
             test: ['CMD', 'sh', '-c', 'pgrep cron > /dev/null || exit 1']
             interval: 60s
@@ -34,6 +72,6 @@ services:
             retries: 3
             start_period: 30s
 
-        # Security hardening
+
         security_opt:
             - no-new-privileges:true
