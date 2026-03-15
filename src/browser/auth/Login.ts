@@ -78,7 +78,11 @@ export class Login {
         try {
             this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Starting login process')
 
-            await page.goto('https://www.bing.com/rewards/dashboard', { waitUntil: 'domcontentloaded' }).catch(() => {})
+            await page
+                .goto('https://rewards.bing.com/createuser?idru=%2F&userScenarioId=anonsignin', {
+                    waitUntil: 'domcontentloaded'
+                })
+                .catch(() => {})
             await this.bot.utils.wait(2000)
             await this.bot.browser.utils.reloadBadPage(page)
             await this.bot.browser.utils.disableFido(page)
