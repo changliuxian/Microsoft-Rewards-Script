@@ -665,6 +665,25 @@ export class Login {
                     const html = await page.content()
                     const $ = await this.bot.browser.utils.loadInCheerio(html)
 
+                    // Check which version of the dashboard is being used, disable requestToken req on new dash
+                    const isModernDashboard = $('section#dailyset').length > 0 // Only on new UI and on dashboard/overview page
+
+                    if (isModernDashboard) {
+                        this.bot.rewardsVersion = 'modern'
+
+                        this.bot.logger.warn(
+                            this.bot.isMobile,
+                            'GET-REWARD-SESSION',
+                            'Modern Rewards dashboard detected. This script version may not fully support it.'
+                        )
+
+                        this.bot.logger.warn(
+                            this.bot.isMobile,
+                            'GET-REWARD-SESSION',
+                            'RequestToken disabled for this session (expected behavior).'
+                        )
+                    }
+
                     const token =
                         $(this.selectors.requestToken).attr('value') ??
                         $(this.selectors.requestTokenMeta).attr('content') ??

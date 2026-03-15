@@ -13,8 +13,8 @@ services:
             # ── Scheduling ───────────────────────────────────────────────────
             TZ: 'Asia/Shanghai'
             NODE_ENV: 'production'
-            CRON_SCHEDULE: '0 7 * * *'   # use crontab.guru to customize your schedule
-            RUN_ON_START: 'true'          # run script immediately on container start
+            CRON_SCHEDULE: '0 7 * * *' # use crontab.guru to customize your schedule
+            RUN_ON_START: 'true' # run script immediately on container start
             SKIP_RANDOM_SLEEP: 'false'
             #MIN_SLEEP_MINUTES: "5"
             #MAX_SLEEP_MINUTES: "50"
@@ -43,7 +43,7 @@ services:
 
             # ── Configuration ───────────────────────────────────────────────
             # Uncomment to override defaults, a full list of configuration options are in the README.
-            # 
+            #
             # General:
             #CONFIG_CLUSTERS: '1'
             #

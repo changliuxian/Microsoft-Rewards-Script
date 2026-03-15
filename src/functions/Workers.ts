@@ -20,7 +20,7 @@ export class Workers {
         const todayKey = this.bot.utils.getFormattedDate()
         const todayData = data.dailySetPromotions[todayKey]
 
-        const activitiesUncompleted = todayData?.filter(x => !x.complete && x.pointProgressMax > 0) ?? []
+        const activitiesUncompleted = todayData?.filter(x => !x?.complete && x.pointProgressMax > 0) ?? []
 
         if (!activitiesUncompleted.length) {
             this.bot.logger.info(this.bot.isMobile, 'DAILY-SET', 'All "Daily Set" items have already been completed')
@@ -173,8 +173,10 @@ export class Workers {
     }
 
     public async doPunchCards(data: DashboardData, page: Page) {
-        const punchCards: PunchCard[] =
-            data.punchCards.filter(x => !x.parentPromotion.complete && x.parentPromotion.pointProgressMax > 0) ?? []
+        const punchCards =
+            data.punchCards?.filter(
+                x => !x.parentPromotion?.complete && (x.parentPromotion?.pointProgressMax ?? 0) > 0
+            ) ?? []
 
         const punchCardActivities = punchCards.flatMap(x => x.childPromotions)
 

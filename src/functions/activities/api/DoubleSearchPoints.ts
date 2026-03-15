@@ -12,7 +12,7 @@ export class DoubleSearchPoints extends Workers {
         const activityType = promotion.activityType
 
         try {
-            if (!this.bot.requestToken) {
+            if (!this.bot.requestToken && this.bot.rewardsVersion === 'legacy') {
                 this.bot.logger.warn(
                     this.bot.isMobile,
                     'DOUBLE-SEARCH-POINTS',

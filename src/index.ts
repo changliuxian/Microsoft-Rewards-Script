@@ -81,6 +81,8 @@ export class MicrosoftRewardsBot {
 
     public userData: UserData
 
+    public rewardsVersion: 'legacy' | 'modern' = 'legacy'
+
     public accessToken = ''
     public requestToken = ''
     public cookies: { mobile: Cookie[]; desktop: Cookie[] }

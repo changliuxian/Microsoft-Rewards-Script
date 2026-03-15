@@ -12,7 +12,7 @@ export class UrlReward extends Workers {
     private oldBalance: number = this.bot.userData.currentPoints
 
     public async doUrlReward(promotion: BasePromotion) {
-        if (!this.bot.requestToken) {
+        if (!this.bot.requestToken && this.bot.rewardsVersion === 'legacy') {
             this.bot.logger.warn(
                 this.bot.isMobile,
                 'URL-REWARD',
