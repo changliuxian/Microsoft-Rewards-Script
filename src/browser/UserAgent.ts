@@ -44,7 +44,7 @@ export class UserAgentManager {
     async getChromeVersion(isMobile: boolean): Promise<string> {
         try {
             const request = {
-                url: 'https://googlechromelabs.chaostar.pro/chrome-for-testing/last-known-good-versions.json',
+                url: 'https://cdn.jsdelivr.net/gh/GoogleChromeLabs/chrome-for-testing@main/data/last-known-good-versions.json',
                 method: 'GET',
                 headers: {
                     'Content-Type': 'application/json'
