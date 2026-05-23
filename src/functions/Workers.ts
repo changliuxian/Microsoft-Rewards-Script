@@ -172,6 +172,13 @@ export class Workers {
         this.bot.logger.info(this.bot.isMobile, 'SPECIAL-ACTIVITY', 'All "Special Activites" items have been completed')
     }
 
+
+    public async doClaimBonusPoints(data: DashboardData) {
+        if (data.pointClaimBannerPromotion && !data.pointClaimBannerPromotion.complete) {
+            await this.bot.activities.doClaimBonusPoints()
+        }
+    }
+
     public async doPunchCards(data: DashboardData, page: Page) {
         const punchCards =
             data.punchCards?.filter(

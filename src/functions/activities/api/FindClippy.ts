@@ -50,7 +50,7 @@ export class FindClippy extends Workers {
             const formData = new URLSearchParams({
                 id: offerId,
                 hash: promotion.hash,
-                timeZone: '60',
+                timeZone: this.bot.userData.timezoneOffset,
                 activityAmount: '1',
                 dbs: '0',
                 form: '',
@@ -61,7 +61,7 @@ export class FindClippy extends Workers {
             this.bot.logger.debug(
                 this.bot.isMobile,
                 'FIND-CLIPPY',
-                `Prepared Find Clippy form data | offerId=${offerId} | hash=${promotion.hash} | timeZone=60 | activityAmount=1 | type=${activityType}`
+                `Prepared Find Clippy form data | offerId=${offerId} | hash=${promotion.hash} | timeZone=${this.bot.userData.timezoneOffset} | activityAmount=1 | type=${activityType}`
             )
 
             const request: AxiosRequestConfig = {

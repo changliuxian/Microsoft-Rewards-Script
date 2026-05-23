@@ -46,7 +46,7 @@ export class DoubleSearchPoints extends Workers {
             const formData = new URLSearchParams({
                 id: offerId,
                 hash: promotion.hash,
-                timeZone: '60',
+                timeZone: this.bot.userData.timezoneOffset,
                 activityAmount: '1',
                 dbs: '0',
                 form: '',
@@ -57,7 +57,7 @@ export class DoubleSearchPoints extends Workers {
             this.bot.logger.debug(
                 this.bot.isMobile,
                 'DOUBLE-SEARCH-POINTS',
-                `Prepared Double Search Points form data | offerId=${offerId} | hash=${promotion.hash} | timeZone=60 | activityAmount=1 | type=${activityType}`
+                `Prepared Double Search Points form data | offerId=${offerId} | hash=${promotion.hash} | timeZone=${this.bot.userData.timezoneOffset} | activityAmount=1 | type=${activityType}`
             )
 
             const request: AxiosRequestConfig = {

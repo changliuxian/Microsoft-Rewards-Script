@@ -5,8 +5,10 @@
     "runOnZeroPoints": false,
     "clusters": 1,
     "errorDiagnostics": false,
+    "ensureStreakProtection": true,
     "workers": {
         "doDailySet": true,
+        "doClaimBonusPoints": true,
         "doSpecialPromotions": true,
         "doMorePromotions": true,
         "doPunchCards": true,
@@ -22,7 +24,13 @@
         "scrollRandomResults": false,
         "clickRandomResults": false,
         "parallelSearching": true,
-        "queryEngines": ["google", "wikipedia", "reddit", "local", "customCN"],
+        "queryEngines": [
+            "google",
+            "wikipedia",
+            "reddit",
+            "local",
+            "customCN"
+        ],
         "searchResultVisitTime": "10sec",
         "searchDelay": {
             "min": "30sec",
@@ -37,8 +45,13 @@
     "consoleLogFilter": {
         "enabled": false,
         "mode": "whitelist",
-        "levels": ["error", "warn"],
-        "keywords": ["starting account"],
+        "levels": [
+            "error",
+            "warn"
+        ],
+        "keywords": [
+            "starting account"
+        ],
         "regexPatterns": []
     },
     "proxy": {
@@ -55,14 +68,23 @@
             "topic": "",
             "token": "",
             "title": "Microsoft-Rewards-Script",
-            "tags": ["bot", "notify"],
+            "tags": [
+                "bot",
+                "notify"
+            ],
             "priority": 3
         },
         "webhookLogFilter": {
             "enabled": false,
             "mode": "whitelist",
-            "levels": ["error"],
-            "keywords": ["starting account", "select number", "collected"],
+            "levels": [
+                "error"
+            ],
+            "keywords": [
+                "starting account",
+                "select number",
+                "collected"
+            ],
             "regexPatterns": []
         }
     }

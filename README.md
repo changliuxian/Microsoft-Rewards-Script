@@ -106,21 +106,23 @@ Edit `config.json` to customize behavior, or set `CONFIG_*` environment variable
 
 ### Core
 
-| Setting                    | Type    | Default                      | Description                           | Docker environment variable   |
-| -------------------------- | ------- | ---------------------------- | ------------------------------------- | ----------------------------- |
-| `baseURL`                  | string  | `"https://rewards.bing.com"` | Microsoft Rewards base URL            |                               |
-| `sessionPath`              | string  | `"sessions"`                 | Directory to store browser sessions   |                               |
-| `headless`                 | boolean | `false`                      | Run browser invisibly                 | Always `true` in Docker       |
-| `clusters`                 | number  | `1`                          | Number of concurrent account clusters | `CONFIG_CLUSTERS`             |
-| `errorDiagnostics`         | boolean | `false`                      | Enable error diagnostics              | `CONFIG_ERROR_DIAGNOSTICS`    |
-| `searchOnBingLocalQueries` | boolean | `false`                      | Use local query list                  | `CONFIG_SEARCH_ON_BING_LOCAL` |
-| `globalTimeout`            | string  | `"30sec"`                    | Timeout for all actions               | `CONFIG_GLOBAL_TIMEOUT`       |
+| Setting                    | Type    | Default                      | Description                           | Docker environment variable       |
+| -------------------------- | ------- | ---------------------------- | ------------------------------------- | --------------------------------- |
+| `baseURL`                  | string  | `"https://rewards.bing.com"` | Microsoft Rewards base URL            |                                   |
+| `sessionPath`              | string  | `"sessions"`                 | Directory to store browser sessions   |                                   |
+| `headless`                 | boolean | `false`                      | Run browser invisibly                 | Always `true` in Docker           |
+| `clusters`                 | number  | `1`                          | Number of concurrent account clusters | `CONFIG_CLUSTERS`                 |
+| `errorDiagnostics`         | boolean | `false`                      | Enable error diagnostics              | `CONFIG_ERROR_DIAGNOSTICS`        |
+| `ensureStreakProtection`   | boolean | `true`                       | Ensures streak protection is enabled  | `CONFIG_ENSURE_STREAK_PROTECTION` |
+| `searchOnBingLocalQueries` | boolean | `false`                      | Use local query list                  | `CONFIG_SEARCH_ON_BING_LOCAL`     |
+| `globalTimeout`            | string  | `"30sec"`                    | Timeout for all actions               | `CONFIG_GLOBAL_TIMEOUT`           |
 
 ### Workers
 
 | Setting                       | Type    | Default | Description                 | Docker environment variable        |
 | ----------------------------- | ------- | ------- | --------------------------- | ---------------------------------- |
 | `workers.doDailySet`          | boolean | `true`  | Complete daily set          | `CONFIG_WORKER_DAILY_SET`          |
+| `workers.doClaimBonusPoints`  | boolean | `true`  | Claim bonus points          | `CONFIG_WORKER_CLAIM_BONUS_POINTS` |
 | `workers.doSpecialPromotions` | boolean | `true`  | Complete special promotions | `CONFIG_WORKER_SPECIAL_PROMOTIONS` |
 | `workers.doMorePromotions`    | boolean | `true`  | Complete more promotions    | `CONFIG_WORKER_MORE_PROMOTIONS`    |
 | `workers.doPunchCards`        | boolean | `true`  | Complete punchcards         | `CONFIG_WORKER_PUNCH_CARDS`        |
