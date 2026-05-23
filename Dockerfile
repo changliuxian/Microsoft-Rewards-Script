@@ -24,8 +24,7 @@ RUN rm -rf node_modules \
 
 # Install Chromium Headless Shell, and cleanup
 RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources && \
-    npx patchright install --with-deps --only-shell chromium \
-    && rm -rf /root/.cache /tmp/* /var/tmp/*
+    npx patchright install --with-deps --only-shell chromium
 
 ###############################################################################
 # Stage 2: Runtime
