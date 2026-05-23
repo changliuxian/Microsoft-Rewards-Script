@@ -1,7 +1,7 @@
 ###############################################################################
 # Stage 1: Builder
 ###############################################################################
-FROM registry.cn-hangzhou.aliyuncs.com/aliyun_google/node:24-slim AS builder
+FROM docker.m.daocloud.io/library/node:24-slim AS builder
 
 WORKDIR /usr/src/microsoft-rewards-script
 
@@ -29,7 +29,7 @@ RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debia
 ###############################################################################
 # Stage 2: Runtime
 ###############################################################################
-FROM registry.cn-hangzhou.aliyuncs.com/aliyun_google/node:24-slim AS runtime
+FROM docker.m.daocloud.io/library/node:24-slim AS runtime
 
 WORKDIR /usr/src/microsoft-rewards-script
 
