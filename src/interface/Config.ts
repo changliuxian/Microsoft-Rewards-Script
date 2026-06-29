@@ -18,7 +18,7 @@ export interface Config {
     webhook: ConfigWebhook
 }
 
-export type QueryEngine = 'google' | 'wikipedia' | 'wikirandom' | 'hackernews' | 'reddit' | 'local'
+export type QueryEngine = 'google' | 'wikipedia' | 'wikirandom' | 'hackernews' | 'reddit' | 'local' | 'customCN'
 
 // RSS feeds are selected with a dotted path: 'rss' (every catalogued feed),
 // 'rss.<site>' (every feed for that site), or 'rss.<site>.<endpoint>' (one feed).

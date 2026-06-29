@@ -11,7 +11,8 @@ import type {
     HackerNewsResponse,
     RedditListing,
     WikipediaRandomResponse,
-    WikipediaTopResponse
+    WikipediaTopResponse,
+    CNTrends
 } from '../interface/Search'
 import type { QueryEngine, QueryEngineEntry } from '../interface/Config'
 import type { MicrosoftRewardsBot } from '../index'
@@ -60,13 +61,22 @@ export class QueryCore {
     constructor(private bot: MicrosoftRewardsBot) {}
 
     async queryManager(options: QueryManagerOptions = {}): Promise<string[]> {
-        const {
+        let {
             shuffle = false,
             sourceOrder = ['google', 'wikipedia', 'wikirandom', 'hackernews', 'reddit', 'local'],
             related = true,
             langCode = 'en',
             geoLocale = 'US'
         } = options
+
+        if (geoLocale === 'CN') {
+            sourceOrder = ['customCN', 'local']
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                'QUERY-MANAGER',
+                `CN geoLocale detected, overriding sourceOrder to ${sourceOrder.join(',')}`
+            )
+        }
 
         try {
             const sourceHandlers: Record<QueryEngine, () => Promise<string[]> | string[]> = {
@@ -75,7 +85,8 @@ export class QueryCore {
                 wikirandom: () => this.getWikipediaRandom(langCode).catch(() => []),
                 hackernews: () => this.getHackerNewsTopics().catch(() => []),
                 reddit: () => this.getRedditTopics().catch(() => []),
-                local: () => this.getLocalQueryList()
+                local: () => this.getLocalQueryList(),
+                customCN: () => this.getCustomCNTrends().catch(() => [])
             }
 
             const isRss = (s: string) => s === 'rss' || s.startsWith('rss.')
@@ -456,6 +467,48 @@ export class QueryCore {
                 this.bot.isMobile,
                 'SEARCH-LOCAL-QUERY-LIST',
                 `Failed reading search-queries.json | ${error instanceof Error ? error.message : String(error)}`
+            )
+            return []
+        }
+    }
+
+    private async getCustomCNTrends(): Promise<string[]> {
+        try {
+            this.bot.logger.debug(this.bot.isMobile, 'SEARCH-CN-TRENDS', 'Generating search queries from custom CN source')
+
+            const request: HttpRequestConfig = {
+                url: 'https://news.zpa666.top/api/douyin?limit=100&cache=false',
+                method: 'GET',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            }
+
+            const response = await this.bot.http.request<CNTrends>(request, this.bot.config.proxy.queryEngine)
+            const data = response.data
+
+            if (data.code !== 200) {
+                this.bot.logger.warn(
+                    this.bot.isMobile,
+                    'SEARCH-CN-TRENDS',
+                    `Custom CN source returned non-200 code: ${data.code}`
+                )
+                return []
+            }
+
+            const topics = data.data?.map(topic => topic.title.toLowerCase()) ?? []
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                'SEARCH-CN-TRENDS',
+                `Got ${topics.length} topics from custom CN source`
+            )
+
+            return topics
+        } catch (error) {
+            this.bot.logger.error(
+                this.bot.isMobile,
+                'SEARCH-CN-TRENDS',
+                `An error occurred: ${error instanceof Error ? `${error.name}: ${error.message}` : String(error)}`
             )
             return []
         }
