@@ -1,0 +1,114 @@
+import type { BasePromotion } from '../../../interface/DashboardData'
+import { Workers } from '../../Workers'
+
+export class UrlReward extends Workers {
+    public async doUrlReward(promotion: BasePromotion) {
+        const offerId = promotion.offerId
+
+        const actionId = this.bot.nextActions.reportActivity
+        if (!actionId) {
+            this.bot.logger.warn(
+                this.bot.isMobile,
+                'URL-REWARD',
+                `Skipping ${offerId}: "reportActivity" not discovered in bundle`
+            )
+            return
+        }
+
+        const live = this.bot.reactSnapshot?.offers.find(o => o.offerId === offerId)
+        if (!live) {
+            this.bot.logger.warn(this.bot.isMobile, 'URL-REWARD', `Skipping ${offerId}: not present in page snapshot`)
+            return
+        }
+        if (!live.reportable) {
+            this.bot.logger.warn(
+                this.bot.isMobile,
+                'URL-REWARD',
+                `Skipping ${offerId}: not reportable (completed/locked/no-hash/future-dated)`
+            )
+            return
+        }
+
+        if (this.bot.config.skipNonPointTasks && this.isNonCrediting(live.points, live.promotionSubtype, live.title)) {
+            this.bot.logger.info(
+                this.bot.isMobile,
+                'URL-REWARD',
+                `Skipping ${offerId}: awards no points (points=${live.points}${live.promotionSubtype ? ` subtype=${live.promotionSubtype}` : ''}) - likely a free trial/non-crediting offer. Set skipNonPointTasks=false to attempt anyway.`
+            )
+            return
+        }
+
+        const oldBalance = this.bot.userData.currentPoints
+        const expectedPoints = live.points
+        const activityType = Number(promotion.activityType ?? 11)
+
+        this.bot.logger.info(
+            this.bot.isMobile,
+            'URL-REWARD',
+            `Starting UrlReward | offerId=${offerId} | geo=${this.bot.userData.geoLocale} | oldBalance=${oldBalance}`
+        )
+
+        try {
+            const { status, acknowledged } = await this.bot.browser.func.reportServerAction(actionId, [
+                live.hash,
+                activityType,
+                {
+                    offerid: offerId,
+                    isPromotional: live.isPromotional ? true : '$undefined',
+                    timezoneOffset: this.bot.userData.timezoneOffset
+                }
+            ])
+
+            const newBalance = await this.bot.browser.func.getCurrentPoints()
+            const gainedPoints = newBalance - oldBalance
+
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                'URL-REWARD',
+                `Response | offerId=${offerId} | status=${status} | acknowledged=${acknowledged} | gainedPoints=${gainedPoints}`
+            )
+
+            if (gainedPoints > 0) {
+                this.bot.userData.currentPoints = newBalance
+                this.bot.userData.gainedPoints = (this.bot.userData.gainedPoints ?? 0) + gainedPoints
+
+                const shortfall = expectedPoints > 0 && gainedPoints < expectedPoints
+                this.bot.logger.info(
+                    this.bot.isMobile,
+                    'URL-REWARD',
+                    `Completed UrlReward | offerId=${offerId} | gainedPoints=${gainedPoints}${expectedPoints > 0 ? `/${expectedPoints}` : ''} | newBalance=${newBalance}${shortfall ? ' | WARNING: credited less than advertised' : ''}`,
+                    'green'
+                )
+            } else if (acknowledged && expectedPoints === 0) {
+                this.bot.logger.info(
+                    this.bot.isMobile,
+                    'URL-REWARD',
+                    `Completed UrlReward (no points by design) | offerId=${offerId} | acknowledged=true | balance=${newBalance}`,
+                    'green'
+                )
+            } else {
+                this.bot.logger.warn(
+                    this.bot.isMobile,
+                    'URL-REWARD',
+                    `UrlReward credited no points | offerId=${offerId} | acknowledged=${acknowledged} | expected=${expectedPoints} | balance=${newBalance}`
+                )
+            }
+
+            await this.bot.utils.wait(this.bot.utils.randomDelay(5000, 10000))
+        } catch (error) {
+            this.bot.logger.error(
+                this.bot.isMobile,
+                'URL-REWARD',
+                `Error in doUrlReward | offerId=${offerId} | message=${error instanceof Error ? error.message : String(error)}`
+            )
+        }
+    }
+
+    private isNonCrediting(points: number, subtype: string | null, title: string): boolean {
+        if (points > 0) return false
+        const haystack = `${subtype ?? ''} ${title ?? ''}`.toLowerCase()
+
+        // Make proper language independant
+        return points === 0 || /free trial|trial|subscription|sign up|sign-up|signup/.test(haystack)
+    }
+}

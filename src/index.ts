@@ -1,549 +1,605 @@
-import cluster from 'cluster'
-// Use Page type from playwright for typings; at runtime rebrowser-playwright extends playwright
-import type { Page } from 'playwright'
+import { AsyncLocalStorage } from 'node:async_hooks'
+import cluster, { Worker } from 'cluster'
+import type { BrowserContext, Cookie, Page } from 'patchright'
+import pkg from '../package.json'
+
+import type { BrowserFingerprintWithHeaders } from 'fingerprint-generator'
 
 import Browser from './browser/Browser'
 import BrowserFunc from './browser/BrowserFunc'
-import BrowserUtil from './browser/BrowserUtil'
+import BrowserUtils from './browser/BrowserUtils'
+import ReactFunc from './browser/ReactFunc'
+import type { PageSnapshot } from './browser/ReactFunc'
 
-import { log } from './util/Logger'
-import Util from './util/Utils'
-import { loadAccounts, loadConfig, saveSessionData } from './util/Load'
+import { IpcLog, Logger } from './logging/Logger'
+import Utils, { isBrowserClosedError } from './util/Utils'
+import { loadAccounts, loadConfig } from './util/Load'
+import { closeSessionStore } from './util/SessionStore'
+import { checkNodeVersion } from './util/Validator'
 
-import { Login } from './functions/Login'
+import { Login } from './browser/auth/Login'
 import { Workers } from './functions/Workers'
 import Activities from './functions/Activities'
+import { SearchManager } from './functions/SearchManager'
+import { PunchcardManager } from './functions/PunchcardManager'
 
-import { Account } from './interface/Account'
-import Axios from './util/Axios'
-import fs from 'fs'
-import path from 'path'
+import type { Account } from './interface/Account'
+import HttpClient from './util/Http'
+import { sendDiscord, flushDiscordQueue } from './logging/Discord'
+import { sendNtfy, flushNtfyQueue } from './logging/Ntfy'
+import type { DashboardData } from './interface/DashboardData'
+import type { AppDashboardData } from './interface/AppDashBoardData'
 
+interface ExecutionContext {
+    isMobile: boolean
+    account: Account
+}
 
-// Main bot class
-export class MicrosoftRewardsBot {
-    public log: typeof log
-    public config
-    public utils: Util
-    public activities: Activities = new Activities(this)
-    public browser: {
-        func: BrowserFunc,
-        utils: BrowserUtil
+interface BrowserSession {
+    context: BrowserContext
+    fingerprint: BrowserFingerprintWithHeaders
+}
+
+interface AccountStats {
+    email: string
+    initialPoints: number
+    finalPoints: number
+    collectedPoints: number
+    duration: number
+    success: boolean
+    error?: string
+}
+
+const executionContext = new AsyncLocalStorage<ExecutionContext>()
+
+export function getCurrentContext(): ExecutionContext {
+    const context = executionContext.getStore()
+    if (!context) {
+        return { isMobile: false, account: {} as Account }
     }
-    public isMobile: boolean
-    public homePage!: Page
+    return context
+}
 
-    private pointsCanCollect: number = 0
-    private pointsInitial: number = 0
+async function flushAllWebhooks(timeoutMs = 5000): Promise<void> {
+    await Promise.allSettled([flushDiscordQueue(timeoutMs), flushNtfyQueue(timeoutMs)])
+    closeSessionStore()
+}
+
+interface UserData {
+    userName: string
+    geoLocale: string
+    langCode: string
+    timezoneOffset: string
+    initialPoints: number
+    currentPoints: number
+    gainedPoints: number
+}
+
+export class MicrosoftRewardsBot {
+    public logger: Logger
+    public config
+    public utils: Utils
+    public activities: Activities = new Activities(this)
+    public browser: { func: BrowserFunc; utils: BrowserUtils; react: ReactFunc }
+
+    public mainMobilePage!: Page
+    public mainDesktopPage!: Page
+
+    public userData: UserData
+
+    public nextActions: Record<string, string> = {}
+    public nextRouterStateTree = ''
+    public reactSnapshot: PageSnapshot | null = null
+
+    public accessToken = ''
+    public cookies: { mobile: Cookie[]; desktop: Cookie[] }
+    private fingerprintMobile?: BrowserFingerprintWithHeaders
+    private fingerprintDesktop?: BrowserFingerprintWithHeaders
+
+    get fingerprint(): BrowserFingerprintWithHeaders {
+        const ctx = this.isMobile ? this.fingerprintMobile : this.fingerprintDesktop
+        return (ctx ?? this.fingerprintMobile ?? this.fingerprintDesktop) as BrowserFingerprintWithHeaders
+    }
 
     private activeWorkers: number
-    private mobileRetryAttempts: number
+    private exitedWorkers: number[]
     private browserFactory: Browser = new Browser(this)
     private accounts: Account[]
-    private workers: Workers
+    public workers: Workers
+    private searchManager: SearchManager
+    private punchcardManager: PunchcardManager
     private login = new Login(this)
-    private accessToken: string = ''
 
-    // Summary collection (per process)
-    private accountSummaries: AccountSummary[] = []
+    public http!: HttpClient
 
-    //@ts-expect-error Will be initialized later
-    public axios: Axios
-
-    constructor(isMobile: boolean) {
-        this.isMobile = isMobile
-        this.log = log
-
+    constructor() {
+        this.userData = {
+            userName: '',
+            geoLocale: 'US',
+            langCode: 'en',
+            timezoneOffset: '60',
+            initialPoints: 0,
+            currentPoints: 0,
+            gainedPoints: 0
+        }
+        this.logger = new Logger(this)
         this.accounts = []
-        this.utils = new Util()
+        this.cookies = { mobile: [], desktop: [] }
+        this.utils = new Utils()
         this.workers = new Workers(this)
+        this.searchManager = new SearchManager(this)
+        this.punchcardManager = new PunchcardManager(this)
         this.browser = {
             func: new BrowserFunc(this),
-            utils: new BrowserUtil(this)
+            utils: new BrowserUtils(this),
+            react: new ReactFunc(this)
         }
         this.config = loadConfig()
         this.activeWorkers = this.config.clusters
-        this.mobileRetryAttempts = 0
+        this.exitedWorkers = []
     }
 
-    async initialize() {
+    get isMobile(): boolean {
+        return getCurrentContext().isMobile
+    }
+
+    async initialize(): Promise<void> {
         this.accounts = loadAccounts()
+        this.warnExperimental()
     }
 
-    async run() {
-        this.printBanner()
-        log('main', 'MAIN', `Bot started with ${this.config.clusters} clusters`)
+    // Move to utils
+    private warnExperimental(): void {
+        const exp = this.config.experimental
+        const enabled = [exp.apiSearch && 'apiSearch', exp.apiSearchOnBing && 'apiSearchOnBing'].filter(
+            Boolean
+        ) as string[]
+        if (!enabled.length) return
 
-        // Only cluster when there's more than 1 cluster demanded
+        this.logger.warn(
+            'main',
+            'EXPERIMENTAL',
+            `${enabled.join(' + ')} enabled - these perform searches over HTTP with no real browser. ` +
+                `This path is EXPERIMENTAL and UNSAFE and may get your account flagged or banned. ` +
+                `Disable it under config.experimental if you are unsure.`,
+            'redBright'
+        )
+    }
+
+    async run(): Promise<void> {
+        const totalAccounts = this.accounts.length
+        const runStartTime = Date.now()
+
+        this.logger.info(
+            'main',
+            'RUN-START',
+            `Starting Microsoft Rewards Script | v${pkg.version} | Accounts: ${totalAccounts} | Clusters: ${this.config.clusters}`
+        )
+
         if (this.config.clusters > 1) {
             if (cluster.isPrimary) {
-                this.runMaster()
+                await this.runMaster(runStartTime)
             } else {
-                this.runWorker()
+                this.runWorker(runStartTime)
             }
         } else {
-            await this.runTasks(this.accounts)
+            await this.runTasks(this.accounts, runStartTime)
         }
     }
 
-    private printBanner() {
-        // Only print once (primary process or single cluster execution)
-        if (this.config.clusters > 1 && !cluster.isPrimary) return
-        try {
-            const pkgPath = path.join(__dirname, '../', 'package.json')
-            let version = 'unknown'
-            if (fs.existsSync(pkgPath)) {
-                const raw = fs.readFileSync(pkgPath, 'utf-8')
-                const pkg = JSON.parse(raw)
-                version = pkg.version || version
-            }
-            const banner = [
-                '  __  __  _____       _____                            _     ',
-                ' |  \/  |/ ____|     |  __ \\                          | |    ',
-                ' | \  / | (___ ______| |__) |_____      ____ _ _ __ __| |___ ',
-                ' | |\/| |\\___ \\______|  _  // _ \\ \\ /\\ / / _` | \'__/ _` / __|',
-                ' | |  | |____) |     | | \\ \\  __/ \\ V  V / (_| | | | (_| \\__ \\',
-                ' |_|  |_|_____/      |_|  \\_\\___| \\_/\\_/ \\__,_|_|  \\__,_|___/',
-                '',
-                ` Version: v${version}`,
-                ''
-            ].join('\n')
-            console.log(banner)
-        } catch { /* ignore banner errors */ }
-    }
+    private async runMaster(runStartTime: number): Promise<void> {
+        void this.logger.info('main', 'CLUSTER-PRIMARY', `Primary process started | PID: ${process.pid}`)
 
-    // Return summaries (used when clusters==1)
-    public getSummaries() {
-        return this.accountSummaries
-    }
+        const rawChunks = this.utils.chunkArray(this.accounts, this.config.clusters)
+        const accountChunks = rawChunks.filter(c => c && c.length > 0)
+        this.activeWorkers = accountChunks.length
 
-    private runMaster() {
-        log('main', 'MAIN-PRIMARY', 'Primary process started')
+        const allAccountStats: AccountStats[] = []
+        let hadWorkerFailure = false
 
-        const accountChunks = this.utils.chunkArray(this.accounts, this.config.clusters)
-
-        for (let i = 0; i < accountChunks.length; i++) {
+        for (const chunk of accountChunks) {
             const worker = cluster.fork()
-            const chunk = accountChunks[i]
-            ;(worker as any).send?.({ chunk })
-            // Collect summaries from workers
-            worker.on('message', (msg: any) => {
-                if (msg && msg.type === 'summary' && Array.isArray(msg.data)) {
-                    this.accountSummaries.push(...msg.data)
+            worker.send?.({ chunk, runStartTime })
+
+            worker.on('message', (msg: { __ipcLog?: IpcLog; __stats?: AccountStats[] }) => {
+                if (msg.__stats) {
+                    allAccountStats.push(...msg.__stats)
+                }
+
+                const log = msg.__ipcLog
+                if (log && typeof log.content === 'string') {
+                    const { webhook } = this.config
+                    const { content, level } = log
+
+                    if (webhook.discord?.enabled && webhook.discord.url) {
+                        sendDiscord(webhook.discord.url, content, level)
+                    }
+                    if (webhook.ntfy?.enabled && webhook.ntfy.url) {
+                        sendNtfy(webhook.ntfy, content, level)
+                    }
                 }
             })
+
+            // Startup delay for clusters due to resource usage
+            if (accountChunks.indexOf(chunk) !== accountChunks.length - 1) {
+                await this.utils.wait(5000)
+            }
         }
 
-    cluster.on('exit', (worker: any, code: number) => {
+        const onWorkerExit = async (worker: Worker, code?: number, signal?: string): Promise<void> => {
+            const { pid } = worker.process
+
+            if (!pid || this.exitedWorkers.includes(pid)) {
+                return
+            }
+
+            this.exitedWorkers.push(pid)
             this.activeWorkers -= 1
 
-            log('main', 'MAIN-WORKER', `Worker ${worker.process.pid} destroyed | Code: ${code} | Active workers: ${this.activeWorkers}`, 'warn')
-
-            // Check if all workers have exited
-            if (this.activeWorkers === 0) {
-                // All workers done -> send conclusion (if enabled) then exit
-                this.sendConclusion(this.accountSummaries).finally(() => {
-                    log('main', 'MAIN-WORKER', 'All workers destroyed. Exiting main process!', 'warn')
-                    process.exit(0)
-                })
-            }
-        })
-    }
-
-    private runWorker() {
-        log('main', 'MAIN-WORKER', `Worker ${process.pid} spawned`)
-        // Receive the chunk of accounts from the master
-    ;(process as any).on('message', async ({ chunk }: { chunk: Account[] }) => {
-            await this.runTasks(chunk)
-        })
-    }
-
-    private async runTasks(accounts: Account[]) {
-        for (const account of accounts) {
-            log('main', 'MAIN-WORKER', `Started tasks for account ${account.email}`)
-            
-            const accountStart = Date.now()
-            let desktopInitial = 0
-            let mobileInitial = 0
-            let desktopCollected = 0
-            let mobileCollected = 0
-            const errors: string[] = []
-
-            this.axios = new Axios(account.proxy)
-            const verbose = process.env.DEBUG_REWARDS_VERBOSE === '1'
-            const formatFullErr = (label: string, e: any) => {
-                const base = shortErr(e)
-                if (verbose && e instanceof Error) {
-                    return `${label}:${base} :: ${e.stack?.split('\n').slice(0,4).join(' | ')}`
-                }
-                return `${label}:${base}`
-            }
-            
-            if (this.config.parallel) {
-                const mobileInstance = new MicrosoftRewardsBot(true)
-                mobileInstance.axios = this.axios
-                // Run both and capture results with detailed logging
-                const desktopPromise = this.Desktop(account).catch(e => {
-                    log(false, 'TASK', `Desktop flow failed early for ${account.email}: ${e instanceof Error ? e.message : e}`,'error')
-                    errors.push(formatFullErr('desktop', e)); return null
-                })
-                const mobilePromise = mobileInstance.Mobile(account).catch(e => {
-                    log(true, 'TASK', `Mobile flow failed early for ${account.email}: ${e instanceof Error ? e.message : e}`,'error')
-                    errors.push(formatFullErr('mobile', e)); return null
-                })
-                const [desktopResult, mobileResult] = await Promise.all([desktopPromise, mobilePromise])
-                if (desktopResult) {
-                    desktopInitial = desktopResult.initialPoints
-                    desktopCollected = desktopResult.collectedPoints
-                }
-                if (mobileResult) {
-                    mobileInitial = mobileResult.initialPoints
-                    mobileCollected = mobileResult.collectedPoints
-                }                
-            } else {
-                this.isMobile = false
-                const desktopResult = await this.Desktop(account).catch(e => {
-                    log(false, 'TASK', `Desktop flow failed early for ${account.email}: ${e instanceof Error ? e.message : e}`,'error')
-                    errors.push(formatFullErr('desktop', e)); return null
-                })
-                if (desktopResult) {
-                    desktopInitial = desktopResult.initialPoints
-                    desktopCollected = desktopResult.collectedPoints
-                }
-
-                this.isMobile = true
-                const mobileResult = await this.Mobile(account).catch(e => {
-                    log(true, 'TASK', `Mobile flow failed early for ${account.email}: ${e instanceof Error ? e.message : e}`,'error')
-                    errors.push(formatFullErr('mobile', e)); return null
-                })
-                if (mobileResult) {
-                    mobileInitial = mobileResult.initialPoints
-                    mobileCollected = mobileResult.collectedPoints
-                }
+            const failed = (code ?? 0) !== 0 || Boolean(signal)
+            if (failed) {
+                hadWorkerFailure = true
             }
 
-            const accountEnd = Date.now()
-            const durationMs = accountEnd - accountStart
-            const totalCollected = desktopCollected + mobileCollected
-            const initialTotal = (desktopInitial || 0) + (mobileInitial || 0)
-            this.accountSummaries.push({
-                email: account.email,
-                durationMs,
-                desktopCollected,
-                mobileCollected,
-                totalCollected,
-                initialTotal,
-                endTotal: initialTotal + totalCollected,
-                errors
-            })
+            this.logger.warn(
+                'main',
+                'CLUSTER-WORKER-EXIT',
+                `Worker ${pid} exit | Code: ${code ?? 'n/a'} | Signal: ${signal ?? 'n/a'} | Active workers: ${this.activeWorkers}`
+            )
 
-            log('main', 'MAIN-WORKER', `Completed tasks for account ${account.email}`, 'log', 'green')
+            if (this.activeWorkers <= 0) {
+                const totalCollectedPoints = allAccountStats.reduce((sum, s) => sum + s.collectedPoints, 0)
+                const totalInitialPoints = allAccountStats.reduce((sum, s) => sum + s.initialPoints, 0)
+                const totalFinalPoints = allAccountStats.reduce((sum, s) => sum + s.finalPoints, 0)
+                const totalDurationMinutes = ((Date.now() - runStartTime) / 1000 / 60).toFixed(1)
+
+                this.logger.info(
+                    'main',
+                    'RUN-END',
+                    `Completed all accounts | Accounts processed: ${allAccountStats.length} | Total points collected: +${totalCollectedPoints} | Old total: ${totalInitialPoints} → New total: ${totalFinalPoints} | Total runtime: ${totalDurationMinutes}min`,
+                    'green'
+                )
+
+                await flushAllWebhooks()
+
+                process.exit(hadWorkerFailure ? 1 : 0)
+            }
         }
 
-        log(this.isMobile, 'MAIN-PRIMARY', 'Completed tasks for ALL accounts', 'log', 'green')
-        // Extra diagnostic summary when verbose
-        if (process.env.DEBUG_REWARDS_VERBOSE === '1') {
-            for (const summary of this.accountSummaries) {
-                log('main','SUMMARY-DEBUG',`Account ${summary.email} collected D:${summary.desktopCollected} M:${summary.mobileCollected} TOTAL:${summary.totalCollected} ERRORS:${summary.errors.length ? summary.errors.join(';') : 'none'}`)
-            }
-        }        
-        // If in worker mode (clusters>1) send summaries to primary
-        if (this.config.clusters > 1 && !cluster.isPrimary) {
-            if (process.send) {
-                process.send({ type: 'summary', data: this.accountSummaries })
-            }
-        } else {
-            // Single process mode -> build and send conclusion directly
-            await this.sendConclusion(this.accountSummaries)
-        }        
-        process.exit()
+        cluster.on('exit', (worker, code, signal) => {
+            void onWorkerExit(worker, code ?? undefined, signal ?? undefined)
+        })
+
+        cluster.on('disconnect', worker => {
+            const pid = worker.process?.pid
+            this.logger.warn('main', 'CLUSTER-WORKER-DISCONNECT', `Worker ${pid ?? '?'} disconnected`)
+        })
     }
 
-    // Desktop
-    async Desktop(account: Account) {
-        log(false,'FLOW','Desktop() invoked')        
-        const browser = await this.browserFactory.createBrowser(account.proxy, account.email)
-        this.homePage = await browser.newPage()
+    private runWorker(runStartTimeFromMaster?: number): void {
+        void this.logger.info('main', 'CLUSTER-WORKER-START', `Worker spawned | PID: ${process.pid}`)
 
-        log(this.isMobile, 'MAIN', 'Starting browser')
+        process.on('message', async ({ chunk, runStartTime }: { chunk: Account[]; runStartTime: number }) => {
+            void this.logger.info(
+                'main',
+                'CLUSTER-WORKER-TASK',
+                `Worker ${process.pid} received ${chunk.length} accounts.`
+            )
 
-        // Login into MS Rewards, then go to rewards homepage
-        await this.login.login(this.homePage, account.email, account.password)
+            try {
+                const stats = await this.runTasks(chunk, runStartTime ?? runStartTimeFromMaster ?? Date.now())
 
-        await this.browser.func.goHome(this.homePage)
+                if (process.send) {
+                    process.send({ __stats: stats })
+                }
 
-        const data = await this.browser.func.getDashboardData()
+                await flushAllWebhooks()
+                process.exit(0)
+            } catch (error) {
+                this.logger.error(
+                    'main',
+                    'CLUSTER-WORKER-ERROR',
+                    `Worker task crash: ${error instanceof Error ? error.message : String(error)}`
+                )
 
-    this.pointsInitial = data.userStatus.availablePoints
-    const initial = this.pointsInitial
+                await flushAllWebhooks()
+                process.exit(1)
+            }
+        })
+    }
 
-        log(this.isMobile, 'MAIN-POINTS', `Current point count: ${this.pointsInitial}`)
+    private async runTasks(accounts: Account[], runStartTime: number): Promise<AccountStats[]> {
+        const accountStats: AccountStats[] = []
 
-        const browserEnarablePoints = await this.browser.func.getBrowserEarnablePoints()
+        for (const account of accounts) {
+            const accountStartTime = Date.now()
+            const accountEmail = account.email
+            this.userData.userName = this.utils.getEmailUsername(accountEmail)
+            this.userData.timezoneOffset = String(new Date().getTimezoneOffset())
+            this.userData.langCode = account.langCode ?? 'en'
 
-        // Tally all the desktop points
-        this.pointsCanCollect = browserEnarablePoints.dailySetPoints +
-            browserEnarablePoints.desktopSearchPoints
-            + browserEnarablePoints.morePromotionsPoints
+            try {
+                this.logger.info(
+                    'main',
+                    'ACCOUNT-START',
+                    `Starting account: ${accountEmail} | geoLocale: ${account.geoLocale}`
+                )
 
-        log(this.isMobile, 'MAIN-POINTS', `You can earn ${this.pointsCanCollect} points today`)
+                this.http = new HttpClient(account.proxy)
 
-        // If runOnZeroPoints is false and 0 points to earn, don't continue
-        if (!this.config.runOnZeroPoints && this.pointsCanCollect === 0) {
-            log(this.isMobile, 'MAIN', 'No points to earn and "runOnZeroPoints" is set to "false", stopping!', 'log', 'yellow')
+                const result: { initialPoints: number; collectedPoints: number } | undefined = await this.Main(
+                    account
+                ).catch(error => {
+                    void this.logger.error(
+                        true,
+                        'FLOW',
+                        `Mobile flow failed for ${accountEmail}: ${error instanceof Error ? error.message : String(error)}`
+                    )
+                    return undefined
+                })
 
-            // Close desktop browser
-            await this.browser.func.closeBrowser(browser, account.email)
+                const durationSeconds = ((Date.now() - accountStartTime) / 1000).toFixed(1)
+
+                if (result) {
+                    const collectedPoints = result.collectedPoints ?? 0
+                    const accountInitialPoints = result.initialPoints ?? 0
+                    const accountFinalPoints = accountInitialPoints + collectedPoints
+
+                    accountStats.push({
+                        email: accountEmail,
+                        initialPoints: accountInitialPoints,
+                        finalPoints: accountFinalPoints,
+                        collectedPoints: collectedPoints,
+                        duration: parseFloat(durationSeconds),
+                        success: true
+                    })
+
+                    this.logger.info(
+                        'main',
+                        'ACCOUNT-END',
+                        `Completed account: ${accountEmail} | Total: +${collectedPoints} | Old: ${accountInitialPoints} → New: ${accountFinalPoints} | Duration: ${durationSeconds}s`,
+                        'green'
+                    )
+                } else {
+                    accountStats.push({
+                        email: accountEmail,
+                        initialPoints: 0,
+                        finalPoints: 0,
+                        collectedPoints: 0,
+                        duration: parseFloat(durationSeconds),
+                        success: false,
+                        error: 'Flow failed'
+                    })
+                }
+            } catch (error) {
+                const durationSeconds = ((Date.now() - accountStartTime) / 1000).toFixed(1)
+                this.logger.error(
+                    'main',
+                    'ACCOUNT-ERROR',
+                    `${accountEmail}: ${error instanceof Error ? error.message : String(error)}`
+                )
+
+                accountStats.push({
+                    email: accountEmail,
+                    initialPoints: 0,
+                    finalPoints: 0,
+                    collectedPoints: 0,
+                    duration: parseFloat(durationSeconds),
+                    success: false,
+                    error: error instanceof Error ? error.message : String(error)
+                })
+            }
+        }
+
+        if (this.config.clusters <= 1 && cluster.isPrimary) {
+            const totalCollectedPoints = accountStats.reduce((sum, s) => sum + s.collectedPoints, 0)
+            const totalInitialPoints = accountStats.reduce((sum, s) => sum + s.initialPoints, 0)
+            const totalFinalPoints = accountStats.reduce((sum, s) => sum + s.finalPoints, 0)
+            const totalDurationMinutes = ((Date.now() - runStartTime) / 1000 / 60).toFixed(1)
+
+            this.logger.info(
+                'main',
+                'RUN-END',
+                `Completed all accounts | Accounts processed: ${accountStats.length} | Total points collected: +${totalCollectedPoints} | Old total: ${totalInitialPoints} → New total: ${totalFinalPoints} | Total runtime: ${totalDurationMinutes}min`,
+                'green'
+            )
+
+            await flushAllWebhooks()
+            process.exit(0)
+        }
+
+        return accountStats
+    }
+
+    async createDesktopSession(account: Account): Promise<BrowserSession> {
+        const session = await this.browserFactory.createBrowser(account)
+        this.mainDesktopPage = await session.context.newPage()
+        this.fingerprintDesktop = session.fingerprint
+
+        this.logger.info(this.isMobile, 'BROWSER', `Desktop Browser started | ${account.email}`)
+
+        await this.login.login(this.mainDesktopPage, account)
+        this.cookies.desktop = await session.context.cookies()
+
+        return session
+    }
+
+    async Main(account: Account): Promise<{ initialPoints: number; collectedPoints: number }> {
+        const accountEmail = account.email
+        this.logger.info('main', 'FLOW', `Starting session for ${accountEmail}`)
+
+        let mobileSession: BrowserSession | null = null
+        let mobileContextClosed = false
+
+        try {
+            return await executionContext.run({ isMobile: true, account }, async () => {
+                mobileSession = await this.browserFactory.createBrowser(account)
+                const initialContext: BrowserContext = mobileSession.context
+                this.mainMobilePage = await initialContext.newPage()
+
+                this.logger.info('main', 'BROWSER', `Mobile Browser started | ${accountEmail}`)
+
+                await this.login.login(this.mainMobilePage, account)
+
+                try {
+                    this.accessToken = await this.login.getAppAccessToken(this.mainMobilePage, accountEmail)
+                } catch (error) {
+                    this.logger.error(
+                        'main',
+                        'FLOW',
+                        `Failed to get mobile access token: ${error instanceof Error ? error.message : String(error)}`
+                    )
+                }
+
+                this.cookies.mobile = await initialContext.cookies()
+                this.fingerprintMobile = mobileSession.fingerprint
+
+                const data: DashboardData = await this.browser.func.getDashboardData()
+                const appData: AppDashboardData = await this.browser.func.getAppDashboardData()
+                void appData
+
+                this.userData.geoLocale =
+                    account.geoLocale === 'auto'
+                        ? data.dashboard.userProfile.attributes.country
+                        : account.geoLocale.toLowerCase()
+                if (this.userData.geoLocale.length > 2) {
+                    this.logger.warn(
+                        'main',
+                        'GEO-LOCALE',
+                        `The provided geoLocale is longer than 2 (${this.userData.geoLocale} | auto=${account.geoLocale === 'auto'}), this is likely invalid and can cause errors!`
+                    )
+                }
+
+                this.userData.initialPoints = data.dashboard.userStatus.availablePoints
+                this.userData.currentPoints = data.dashboard.userStatus.availablePoints
+                const initialPoints = this.userData.initialPoints ?? 0
+
+                const browserEarnable = await this.browser.func.getBrowserEarnablePoints()
+                const appEarnable = await this.browser.func.getAppEarnablePoints()
+
+                const pointsCanCollect = browserEarnable.mobileSearchPoints + (appEarnable?.totalEarnablePoints ?? 0)
+
+                this.logger.info(
+                    'main',
+                    'POINTS',
+                    `Earnable today | Mobile: ${pointsCanCollect} | Browser: ${
+                        browserEarnable.mobileSearchPoints
+                    } | App: ${appEarnable?.totalEarnablePoints ?? 0} | ${accountEmail} | locale: ${this.userData.geoLocale}`
+                )
+
+                if (this.config.ensureStreakProtection) {
+                    await this.activities.doEnsureStreakProtection()
+                }
+                if (this.config.workers.doDailySet) await this.workers.doDailySet(data)
+                if (this.config.workers.doActivateSearchPerk) await this.activities.doActivateSearchPerk(data)
+                if (this.config.workers.doMorePromotions) await this.workers.doMorePromotions(data)
+                if (this.config.workers.doDailyCheckIn) await this.activities.doDailyCheckIn()
+                if (this.config.workers.doAppPromotions) await this.workers.doAppPromotions(appData)
+                if (this.config.workers.doReadToEarn) await this.activities.doReadToEarn()
+                if (this.config.workers.doPunchCards) await this.punchcardManager.run(account, data)
+
+                if (this.config.workers.doMobileSearch || this.config.workers.doDesktopSearch) {
+                    await this.searchManager.doSearches(account)
+                }
+
+                // Bonus farming is its own pass that runs AFTER the normal searches
+                if (this.config.workers.doBonusSearches) {
+                    await this.searchManager.doBonusSearches(account)
+                }
+
+                // Do this last due to random bonus points from searching
+                if (this.config.workers.doClaimBonusPoints) await this.workers.doClaimBonusPoints(data)
+
+                this.cookies.mobile = await initialContext.cookies()
+
+                await this.browser.func.closeBrowser(initialContext, accountEmail)
+                mobileContextClosed = true
+
+                const finalPoints = await this.browser.func.getCurrentPoints()
+                const collectedPoints = finalPoints - initialPoints
+
+                this.logger.info('main', 'FLOW', `Collected: +${collectedPoints} | ${accountEmail}`)
+
+                return {
+                    initialPoints,
+                    collectedPoints: collectedPoints || 0
+                }
+            })
+        } finally {
+            if (mobileSession && !mobileContextClosed) {
+                try {
+                    await executionContext.run({ isMobile: true, account }, async () => {
+                        await this.browser.func.closeBrowser(mobileSession!.context, accountEmail)
+                    })
+                } catch (error) {
+                    this.logger.debug(
+                        'main',
+                        'CLEANUP',
+                        `Mobile context close failed | ${error instanceof Error ? error.message : String(error)}`
+                    )
+                }
+            }
+        }
+    }
+}
+
+export { executionContext }
+
+async function main(): Promise<void> {
+    checkNodeVersion()
+    const rewardsBot = new MicrosoftRewardsBot()
+
+    process.on('beforeExit', () => {
+        void flushAllWebhooks()
+    })
+    process.on('SIGINT', async () => {
+        rewardsBot.logger.warn('main', 'PROCESS', 'SIGINT received, flushing and exiting...')
+        await flushAllWebhooks()
+        process.exit(130)
+    })
+    process.on('SIGTERM', async () => {
+        rewardsBot.logger.warn('main', 'PROCESS', 'SIGTERM received, flushing and exiting...')
+        await flushAllWebhooks()
+        process.exit(143)
+    })
+    process.on('uncaughtException', async error => {
+        if (isBrowserClosedError(error)) {
+            rewardsBot.logger.debug(
+                'main',
+                'UNCAUGHT-EXCEPTION',
+                `Ignoring benign browser-closed error during teardown | ${error instanceof Error ? error.message : String(error)}`
+            )
             return
         }
-
-        // Open a new tab to where the tasks are going to be completed
-        const workerPage = await browser.newPage()
-
-        // Go to homepage on worker page
-        await this.browser.func.goHome(workerPage)
-
-        // Complete daily set
-        if (this.config.workers.doDailySet) {
-            await this.workers.doDailySet(workerPage, data)
+        rewardsBot.logger.error('main', 'UNCAUGHT-EXCEPTION', error)
+        await flushAllWebhooks()
+        process.exit(1)
+    })
+    process.on('unhandledRejection', async reason => {
+        if (isBrowserClosedError(reason)) {
+            rewardsBot.logger.debug(
+                'main',
+                'UNHANDLED-REJECTION',
+                `Ignoring benign browser-closed rejection during teardown | ${reason instanceof Error ? reason.message : String(reason)}`
+            )
+            return
         }
-
-        // Complete more promotions
-        if (this.config.workers.doMorePromotions) {
-            await this.workers.doMorePromotions(workerPage, data)
-        }
-
-        // Complete punch cards
-        if (this.config.workers.doPunchCards) {
-            await this.workers.doPunchCard(workerPage, data)
-        }
-
-        // Do desktop searches
-        if (this.config.workers.doDesktopSearch) {
-            await this.activities.doSearch(workerPage, data)
-        }
-
-        // Save cookies
-        await saveSessionData(this.config.sessionPath, browser, account.email, this.isMobile)
-
-        // Fetch points BEFORE closing (avoid page closed reload error)
-        const after = await this.browser.func.getCurrentPoints().catch(()=>initial)        
-        // Close desktop browser
-        await this.browser.func.closeBrowser(browser, account.email)
-        return {
-            initialPoints: initial,
-            collectedPoints: (after - initial) || 0
-        }
-    }
-
-    // Mobile
-    async Mobile(account: Account) {
-        log(true,'FLOW','Mobile() invoked')        
-        const browser = await this.browserFactory.createBrowser(account.proxy, account.email)
-        this.homePage = await browser.newPage()
-
-        log(this.isMobile, 'MAIN', 'Starting browser')
-
-        // Login into MS Rewards, then go to rewards homepage
-        await this.login.login(this.homePage, account.email, account.password)
-        this.accessToken = await this.login.getMobileAccessToken(this.homePage, account.email)
-
-        await this.browser.func.goHome(this.homePage)
-
-    const data = await this.browser.func.getDashboardData()
-    const initialPoints = data.userStatus.availablePoints || this.pointsInitial || 0
-
-        const browserEnarablePoints = await this.browser.func.getBrowserEarnablePoints()
-        const appEarnablePoints = await this.browser.func.getAppEarnablePoints(this.accessToken)
-
-        this.pointsCanCollect = browserEnarablePoints.mobileSearchPoints + appEarnablePoints.totalEarnablePoints
-
-        log(this.isMobile, 'MAIN-POINTS', `You can earn ${this.pointsCanCollect} points today (Browser: ${browserEnarablePoints.mobileSearchPoints} points, App: ${appEarnablePoints.totalEarnablePoints} points)`)
-
-        // If runOnZeroPoints is false and 0 points to earn, don't continue
-        if (!this.config.runOnZeroPoints && this.pointsCanCollect === 0) {
-            log(this.isMobile, 'MAIN', 'No points to earn and "runOnZeroPoints" is set to "false", stopping!', 'log', 'yellow')
-
-            // Close mobile browser
-            await this.browser.func.closeBrowser(browser, account.email)
-            return {
-                initialPoints: initialPoints,
-                collectedPoints: 0
-            }
-        }
-        // Do daily check in
-        if (this.config.workers.doDailyCheckIn) {
-            await this.activities.doDailyCheckIn(this.accessToken, data)
-        }
-
-        // Do read to earn
-        if (this.config.workers.doReadToEarn) {
-            await this.activities.doReadToEarn(this.accessToken, data)
-        }
-
-        // Do mobile searches
-        if (this.config.workers.doMobileSearch) {
-            // If no mobile searches data found, stop (Does not always exist on new accounts)
-            if (data.userStatus.counters.mobileSearch) {
-                // Open a new tab to where the tasks are going to be completed
-                const workerPage = await browser.newPage()
-
-                // Go to homepage on worker page
-                await this.browser.func.goHome(workerPage)
-
-                await this.activities.doSearch(workerPage, data)
-
-                // Fetch current search points
-                const mobileSearchPoints = (await this.browser.func.getSearchPoints()).mobileSearch?.[0]
-
-                if (mobileSearchPoints && (mobileSearchPoints.pointProgressMax - mobileSearchPoints.pointProgress) > 0) {
-                    // Increment retry count
-                    this.mobileRetryAttempts++
-                }
-
-                // Exit if retries are exhausted
-                if (this.mobileRetryAttempts > this.config.searchSettings.retryMobileSearchAmount) {
-                    log(this.isMobile, 'MAIN', `Max retry limit of ${this.config.searchSettings.retryMobileSearchAmount} reached. Exiting retry loop`, 'warn')
-                } else if (this.mobileRetryAttempts !== 0) {
-                    log(this.isMobile, 'MAIN', `Attempt ${this.mobileRetryAttempts}/${this.config.searchSettings.retryMobileSearchAmount}: Unable to complete mobile searches, bad User-Agent? Increase search delay? Retrying...`, 'log', 'yellow')
-
-                    // Close mobile browser
-                    await this.browser.func.closeBrowser(browser, account.email)
-
-                    // Create a new browser and try
-                    await this.Mobile(account)
-                    return
-                }
-            } else {
-                log(this.isMobile, 'MAIN', 'Unable to fetch search points, your account is most likely too "new" for this! Try again later!', 'warn')
-            }
-        }
-
-        const afterPointAmount = await this.browser.func.getCurrentPoints()
-
-        log(this.isMobile, 'MAIN-POINTS', `The script collected ${afterPointAmount - initialPoints} points today`)
-
-        // Close mobile browser
-        await this.browser.func.closeBrowser(browser, account.email)
-
-        return {
-            initialPoints: initialPoints,
-            collectedPoints: (afterPointAmount - initialPoints) || 0
-        }
-    }
-
-    private async sendConclusion(summaries: AccountSummary[]) {
-        const { ConclusionWebhook } = await import('./util/ConclusionWebhook')
-        const cfg = this.config
-        if (!cfg.conclusionWebhook || !cfg.conclusionWebhook.enabled) return
-
-        const totalAccounts = summaries.length
-        if (totalAccounts === 0) return
-
-        let totalCollected = 0
-        let totalInitial = 0
-        let totalEnd = 0
-        let totalDuration = 0
-        let accountsWithErrors = 0
-
-        const accountFields: any[] = []
-        for (const s of summaries) {
-            totalCollected += s.totalCollected
-            totalInitial += s.initialTotal
-            totalEnd += s.endTotal
-            totalDuration += s.durationMs
-            if (s.errors.length) accountsWithErrors++
-
-            const statusEmoji = s.errors.length ? '⚠️' : '✅'
-            const diff = s.totalCollected
-            const duration = formatDuration(s.durationMs)
-            const valueLines: string[] = [
-                `Points: ${s.initialTotal} → ${s.endTotal} ( +${diff} )`,
-                `Breakdown: 🖥️ ${s.desktopCollected} | 📱 ${s.mobileCollected}`,
-                `Duration: ⏱️ ${duration}`
-            ]
-            if (s.errors.length) {
-                valueLines.push(`Errors: ${s.errors.slice(0,2).join(' | ')}`)
-            }
-            accountFields.push({
-                name: `${statusEmoji} ${s.email}`.substring(0, 256),
-                value: valueLines.join('\n').substring(0, 1024),
-                inline: false
-            })
-        }
-
-        const avgDuration = totalDuration / totalAccounts
-        const embed = {
-            title: '🎯 Microsoft Rewards Summary',
-            description: `Processed **${totalAccounts}** account(s)${accountsWithErrors ? ` • ${accountsWithErrors} with issues` : ''}`,
-            color: accountsWithErrors ? 0xFFAA00 : 0x32CD32,
-            fields: [
-                {
-                    name: 'Global Totals',
-                    value: [
-                        `Total Points: ${totalInitial} → ${totalEnd} ( +${totalCollected} )`,
-                        `Average Duration: ${formatDuration(avgDuration)}`,
-                        `Cumulative Runtime: ${formatDuration(totalDuration)}`
-                    ].join('\n')
-                },
-                ...accountFields
-            ].slice(0, 25), // Discord max 25 fields
-            timestamp: new Date().toISOString(),
-            footer: {
-                text: 'Script conclusion webhook'
-            }
-        }
-
-        // Fallback plain text (rare) & embed send
-        const fallback = `Microsoft Rewards Summary\nAccounts: ${totalAccounts}\nTotal: ${totalInitial} -> ${totalEnd} (+${totalCollected})\nRuntime: ${formatDuration(totalDuration)}`
-        await ConclusionWebhook(cfg, fallback, { embeds: [embed] })
-    }
-}
-
-interface AccountSummary {
-    email: string
-    durationMs: number
-    desktopCollected: number
-    mobileCollected: number
-    totalCollected: number
-    initialTotal: number
-    endTotal: number
-    errors: string[]
-}
-
-function shortErr(e: any): string {
-    if (!e) return 'unknown'
-    if (e instanceof Error) return e.message.substring(0, 120)
-    const s = String(e)
-    return s.substring(0, 120)
-}
-
-function formatDuration(ms: number): string {
-    if (!ms || ms < 1000) return `${ms}ms`
-    const sec = Math.floor(ms / 1000)
-    const h = Math.floor(sec / 3600)
-    const m = Math.floor((sec % 3600) / 60)
-    const s = sec % 60
-    const parts: string[] = []
-    if (h) parts.push(`${h}h`)
-    if (m) parts.push(`${m}m`)
-    if (s) parts.push(`${s}s`)
-    return parts.join(' ') || `${ms}ms`    
-}
-
-async function main() {
-    const rewardsBot = new MicrosoftRewardsBot(false)
+        rewardsBot.logger.error('main', 'UNHANDLED-REJECTION', reason as Error)
+        await flushAllWebhooks()
+        process.exit(1)
+    })
 
     try {
         await rewardsBot.initialize()
         await rewardsBot.run()
     } catch (error) {
-        log(false, 'MAIN-ERROR', `Error running desktop bot: ${error}`, 'error')
+        rewardsBot.logger.error('main', 'MAIN-ERROR', error as Error)
     }
 }
 
-// Start the bots
-main().catch(error => {
-    log('main', 'MAIN-ERROR', `Error running bots: ${error}`, 'error')
+main().catch(async error => {
+    const tmpBot = new MicrosoftRewardsBot()
+    tmpBot.logger.error('main', 'MAIN-ERROR', error as Error)
+    await flushAllWebhooks()
     process.exit(1)
 })

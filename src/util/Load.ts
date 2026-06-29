@@ -1,29 +1,155 @@
-import { BrowserContext, Cookie } from 'rebrowser-playwright'
-import { BrowserFingerprintWithHeaders } from 'fingerprint-generator'
 import fs from 'fs'
 import path from 'path'
 
-
-import { Account } from '../interface/Account'
-import { Config, ConfigSaveFingerprint } from '../interface/Config'
+import type { Account, AccountProxy, ConfigSaveFingerprint } from '../interface/Account'
+import type { Config } from '../interface/Config'
+import { validateAccounts, validateConfig } from './Validator'
 
 let configCache: Config
+let envLoaded = false
+
+function getProjectRoot(): string {
+    const cwd = process.cwd()
+    if (fs.existsSync(path.join(cwd, 'package.json'))) return cwd
+
+    let dir = __dirname
+    while (dir !== path.parse(dir).root) {
+        if (fs.existsSync(path.join(dir, 'package.json'))) return dir
+        dir = path.dirname(dir)
+    }
+
+    return cwd
+}
+
+// Check root -> dist -> src (not in dist, but root)
+function resolveProjectFile(filename: string): string | undefined {
+    const root = getProjectRoot()
+    const candidates = [
+        path.join(process.cwd(), filename),
+        path.join(root, filename),
+        path.join(root, 'dist', filename),
+        path.join(root, 'src', filename)
+    ]
+    return candidates.find(p => fs.existsSync(p))
+}
+
+function ensureEnvLoaded(): void {
+    if (envLoaded) return
+    envLoaded = true
+
+    // Check root -> dist -> src (not in dist, but root)
+    const envFile = resolveProjectFile('.env')
+    if (!envFile) return
+
+    const raw = fs.readFileSync(envFile, 'utf-8')
+    for (const line of raw.split(/\r?\n/)) {
+        const trimmed = line.trim()
+        if (!trimmed || trimmed.startsWith('#')) continue
+
+        const eq = trimmed.indexOf('=')
+        if (eq === -1) continue
+
+        const key = trimmed.slice(0, eq).trim()
+        let value = trimmed.slice(eq + 1).trim()
+
+        if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+            value = value.slice(1, -1)
+        }
+
+        if (process.env[key] === undefined) {
+            process.env[key] = value
+        }
+    }
+}
+
+function envStr(key: string): string | undefined {
+    const v = process.env[key]
+    if (v === undefined) return undefined
+    const trimmed = v.trim()
+    return trimmed.length ? trimmed : undefined
+}
+
+function envBool(key: string, fallback: boolean): boolean {
+    const v = envStr(key)
+    if (v === undefined) return fallback
+    return ['1', 'true', 'yes', 'on'].includes(v.toLowerCase())
+}
+
+const deprecationWarned = new Set<string>()
+function envBoolWithLegacy(primary: string, legacy: string, fallback: boolean): boolean {
+    if (envStr(primary) !== undefined) return envBool(primary, fallback)
+    if (envStr(legacy) !== undefined) {
+        if (!deprecationWarned.has(legacy)) {
+            deprecationWarned.add(legacy)
+            console.warn(`[Accounts] ${legacy} is deprecated; rename it to ${primary}.`)
+        }
+        return envBool(legacy, fallback)
+    }
+    return fallback
+}
+
+function envInt(key: string, fallback: number): number {
+    const v = envStr(key)
+    if (v === undefined) return fallback
+    const n = parseInt(v, 10)
+    return Number.isFinite(n) ? n : fallback
+}
+
+function buildProxy(index: string): AccountProxy {
+    return {
+        proxyHttp: envBoolWithLegacy(`ACCOUNT_${index}_PROXY_HTTP`, `ACCOUNT_${index}_PROXY_AXIOS`, false),
+        url: envStr(`ACCOUNT_${index}_PROXY_URL`) ?? '',
+        port: envInt(`ACCOUNT_${index}_PROXY_PORT`, 0),
+        username: envStr(`ACCOUNT_${index}_PROXY_USERNAME`) ?? '',
+        password: envStr(`ACCOUNT_${index}_PROXY_PASSWORD`) ?? ''
+    }
+}
+
+function buildSaveFingerprint(index: string): ConfigSaveFingerprint {
+    return {
+        mobile: envBool(`ACCOUNT_${index}_SAVE_FINGERPRINT_MOBILE`, false),
+        desktop: envBool(`ACCOUNT_${index}_SAVE_FINGERPRINT_DESKTOP`, false)
+    }
+}
 
 export function loadAccounts(): Account[] {
     try {
-        let file = 'accounts.json'
+        ensureEnvLoaded()
 
-        // If dev mode, use dev account(s)
-        if (process.argv.includes('-dev')) {
-            file = 'accounts.dev.json'
+        const accounts: Account[] = []
+
+        for (let i = 1; ; i++) {
+            const index = String(i)
+            const email = envStr(`ACCOUNT_${index}_EMAIL`)
+
+            if (!email) break
+
+            const password = envStr(`ACCOUNT_${index}_PASSWORD`)
+            if (!password) {
+                throw new Error(`ACCOUNT_${index}_EMAIL is set but ACCOUNT_${index}_PASSWORD is missing`)
+            }
+
+            accounts.push({
+                email,
+                password,
+                totpSecret: envStr(`ACCOUNT_${index}_TOTP_SECRET`),
+                recoveryEmail: envStr(`ACCOUNT_${index}_RECOVERY_EMAIL`) ?? '',
+                geoLocale: envStr(`ACCOUNT_${index}_GEO_LOCALE`) ?? 'auto',
+                langCode: envStr(`ACCOUNT_${index}_LANG_CODE`) ?? 'en',
+                proxy: buildProxy(index),
+                saveFingerprint: buildSaveFingerprint(index)
+            })
         }
 
-        const accountDir = path.join(__dirname, '../', file)
-        const accounts = fs.readFileSync(accountDir, 'utf-8')
+        if (!accounts.length) {
+            throw new Error(
+                'No accounts found in environment. Set ACCOUNT_1_EMAIL / ACCOUNT_1_PASSWORD (see env.example).'
+            )
+        }
 
-        return JSON.parse(accounts)
+        return validateAccounts(accounts)
     } catch (error) {
-        throw new Error(error as string)
+        throw new Error(error instanceof Error ? error.message : String(error))
     }
 }
 
@@ -33,83 +159,21 @@ export function loadConfig(): Config {
             return configCache
         }
 
-        const configDir = path.join(__dirname, '../', 'config.json')
-        const config = fs.readFileSync(configDir, 'utf-8')
+        // Check root -> dist -> src (not in dist, but root)
+        const configPath = resolveProjectFile('config.json')
+        if (!configPath) {
+            throw new Error(
+                'config.json not found - place it in the project root (dist/ and src/ are also searched as fallbacks)'
+            )
+        }
+        const config = fs.readFileSync(configPath, 'utf-8')
 
-        const configData = JSON.parse(config)
-        configCache = configData // Set as cache
+        const unverifiedConfig = JSON.parse(config)
+        const configData = validateConfig(unverifiedConfig)
+
+        configCache = configData
 
         return configData
-    } catch (error) {
-        throw new Error(error as string)
-    }
-}
-
-export async function loadSessionData(sessionPath: string, email: string, isMobile: boolean, saveFingerprint: ConfigSaveFingerprint) {
-    try {
-        // Fetch cookie file
-        const cookieFile = path.join(__dirname, '../browser/', sessionPath, email, `${isMobile ? 'mobile_cookies' : 'desktop_cookies'}.json`)
-
-        let cookies: Cookie[] = []
-        if (fs.existsSync(cookieFile)) {
-            const cookiesData = await fs.promises.readFile(cookieFile, 'utf-8')
-            cookies = JSON.parse(cookiesData)
-        }
-
-        // Fetch fingerprint file
-        const fingerprintFile = path.join(__dirname, '../browser/', sessionPath, email, `${isMobile ? 'mobile_fingerpint' : 'desktop_fingerpint'}.json`)
-
-        let fingerprint!: BrowserFingerprintWithHeaders
-        if (((saveFingerprint.desktop && !isMobile) || (saveFingerprint.mobile && isMobile)) && fs.existsSync(fingerprintFile)) {
-            const fingerprintData = await fs.promises.readFile(fingerprintFile, 'utf-8')
-            fingerprint = JSON.parse(fingerprintData)
-        }
-
-        return {
-            cookies: cookies,
-            fingerprint: fingerprint
-        }
-
-    } catch (error) {
-        throw new Error(error as string)
-    }
-}
-
-export async function saveSessionData(sessionPath: string, browser: BrowserContext, email: string, isMobile: boolean): Promise<string> {
-    try {
-        const cookies = await browser.cookies()
-
-        // Fetch path
-        const sessionDir = path.join(__dirname, '../browser/', sessionPath, email)
-
-        // Create session dir
-        if (!fs.existsSync(sessionDir)) {
-            await fs.promises.mkdir(sessionDir, { recursive: true })
-        }
-
-        // Save cookies to a file
-        await fs.promises.writeFile(path.join(sessionDir, `${isMobile ? 'mobile_cookies' : 'desktop_cookies'}.json`), JSON.stringify(cookies))
-
-        return sessionDir
-    } catch (error) {
-        throw new Error(error as string)
-    }
-}
-
-export async function saveFingerprintData(sessionPath: string, email: string, isMobile: boolean, fingerpint: BrowserFingerprintWithHeaders): Promise<string> {
-    try {
-        // Fetch path
-        const sessionDir = path.join(__dirname, '../browser/', sessionPath, email)
-
-        // Create session dir
-        if (!fs.existsSync(sessionDir)) {
-            await fs.promises.mkdir(sessionDir, { recursive: true })
-        }
-
-        // Save fingerprint to a file
-        await fs.promises.writeFile(path.join(sessionDir, `${isMobile ? 'mobile_fingerpint' : 'desktop_fingerpint'}.json`), JSON.stringify(fingerpint))
-
-        return sessionDir
     } catch (error) {
         throw new Error(error as string)
     }

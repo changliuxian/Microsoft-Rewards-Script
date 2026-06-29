@@ -1,8 +1,9 @@
-import { Page } from 'rebrowser-playwright'
-
-import { DashboardData, MorePromotion, PromotionalItem, PunchCard } from '../interface/DashboardData'
-
-import { MicrosoftRewardsBot } from '../index'
+import { URLs } from '../constants/urls'
+import type { Page } from 'patchright'
+import type { MicrosoftRewardsBot } from '../index'
+import type { DashboardData, PunchCard, BasePromotion } from '../interface/DashboardData'
+import type { AppDashboardData } from '../interface/AppDashBoardData'
+import type { QuestChild, ParentQuest } from '../browser/ReactFunc'
 
 export class Workers {
     public bot: MicrosoftRewardsBot
@@ -11,220 +12,447 @@ export class Workers {
         this.bot = bot
     }
 
-    // Daily Set
-    async doDailySet(page: Page, data: DashboardData) {
-        const todayData = data.dailySetPromotions[this.bot.utils.getFormattedDate()]
+    public async doDailySet(data: DashboardData) {
+        const todayKey = this.bot.utils.getFormattedDate()
+        const todayData = data.dashboard.dailySetPromotions[todayKey]
 
-        const activitiesUncompleted = todayData?.filter(x => !x.complete && x.pointProgressMax > 0) ?? []
+        const activitiesUncompleted = todayData?.filter(x => !x?.complete && x.pointProgressMax > 0) ?? []
 
         if (!activitiesUncompleted.length) {
-            this.bot.log(this.bot.isMobile, 'DAILY-SET', 'All Daily Set" items have already been completed')
+            this.bot.logger.info(this.bot.isMobile, 'DAILY-SET', 'All "Daily Set" items have already been completed')
             return
         }
 
-        // Solve Activities
-        this.bot.log(this.bot.isMobile, 'DAILY-SET', 'Started solving "Daily Set" items')
+        this.bot.logger.info(this.bot.isMobile, 'DAILY-SET', 'Started solving "Daily Set" items')
 
-        await this.solveActivities(page, activitiesUncompleted)
+        await this.solveActivities(activitiesUncompleted)
 
-        page = await this.bot.browser.utils.getLatestTab(page)
-
-        // Always return to the homepage if not already
-        await this.bot.browser.func.goHome(page)
-
-        this.bot.log(this.bot.isMobile, 'DAILY-SET', 'All "Daily Set" items have been completed')
+        this.bot.logger.info(this.bot.isMobile, 'DAILY-SET', 'All "Daily Set" items have been completed')
     }
 
-    // Punch Card
-    async doPunchCard(page: Page, data: DashboardData) {
+    public async doMorePromotions(data: DashboardData) {
+        const morePromotions: BasePromotion[] = [
+            ...new Map(
+                [
+                    ...(data.dashboard.morePromotions ?? []),
+                    ...(data.dashboard.morePromotionsWithoutPromotionalItems ?? [])
+                ]
+                    .filter(Boolean)
+                    .map(p => [p.offerId, p as BasePromotion] as const)
+            ).values()
+        ]
 
-        const punchCardsUncompleted = data.punchCards?.filter(x => x.parentPromotion && !x.parentPromotion.complete) ?? [] // Only return uncompleted punch cards
+        const activitiesUncompleted: BasePromotion[] =
+            morePromotions?.filter(x => {
+                if (x.complete) return false
+                if (x.pointProgressMax <= 0) return false
+                if (x.exclusiveLockedFeatureStatus === 'locked') return false
+                if (!x.promotionType) return false
+                if (x.priority < 0 && x.exclusiveLockedFeatureStatus !== 'unlocked') return false
+                if (x.attributes?.promotional === 'True') return false
+                return true
+            }) ?? []
 
-        if (!punchCardsUncompleted.length) {
-            this.bot.log(this.bot.isMobile, 'PUNCH-CARD', 'All "Punch Cards" have already been completed')
+        if (!activitiesUncompleted.length) {
+            this.bot.logger.info(
+                this.bot.isMobile,
+                'MORE-PROMOTIONS',
+                'All "More Promotion" items have already been completed'
+            )
             return
         }
 
-        for (const punchCard of punchCardsUncompleted) {
+        this.bot.logger.info(
+            this.bot.isMobile,
+            'MORE-PROMOTIONS',
+            `Started solving ${activitiesUncompleted.length} "More Promotions" items`
+        )
 
-            // Ensure parentPromotion exists before proceeding
-            if (!punchCard.parentPromotion?.title) {
-                this.bot.log(this.bot.isMobile, 'PUNCH-CARD', `Skipped punchcard "${punchCard.name}" | Reason: Parent promotion is missing!`, 'warn')
+        await this.solveActivities(activitiesUncompleted)
+
+        this.bot.logger.info(this.bot.isMobile, 'MORE-PROMOTIONS', 'All "More Promotion" items have been completed')
+    }
+
+    public async doAppPromotions(data: AppDashboardData) {
+        const appRewards = data.response.promotions.filter(x => {
+            if (x.attributes['complete']?.toLowerCase() !== 'false') return false
+            if (!x.attributes['offerid']) return false
+            if (!x.attributes['type']) return false
+            if (x.attributes['type'] !== 'sapphire') return false
+
+            return true
+        })
+
+        if (!appRewards.length) {
+            this.bot.logger.info(
+                this.bot.isMobile,
+                'APP-PROMOTIONS',
+                'All "App Promotions" items have already been completed'
+            )
+            return
+        }
+
+        for (const reward of appRewards) {
+            await this.bot.activities.doAppReward(reward)
+            await this.bot.utils.wait(this.bot.utils.randomDelay(5000, 15000))
+        }
+
+        this.bot.logger.info(this.bot.isMobile, 'APP-PROMOTIONS', 'All "App Promotions" items have been completed')
+    }
+
+    public async doPunchCards(data: DashboardData, page: Page) {
+        let parents: ParentQuest[]
+
+        try {
+            const earn = await page.request.get(URLs.rewards.earn)
+            if (!earn.ok()) {
+                this.bot.logger.warn(this.bot.isMobile, 'PUNCHCARD', `/earn ${earn.status()} - cannot list quests`)
+                return
+            }
+            const html = await earn.text()
+            parents = this.bot.browser.react.snapshotQuestList(html)
+
+            // Some deploys render the carousel only on /dashboard
+            if (!parents.length) {
+                const dash = await page.request.get(URLs.rewards.dashboard)
+                if (dash.ok()) parents = this.bot.browser.react.snapshotQuestList(html, await dash.text())
+            }
+        } catch (error) {
+            this.bot.logger.warn(
+                this.bot.isMobile,
+                'PUNCHCARD',
+                `Failed fetching /earn for quest list | ${error instanceof Error ? error.message : String(error)}`
+            )
+            return
+        }
+
+        const apiById = new Map(
+            (data.dashboard.punchCards ?? [])
+                .filter(c => c.parentPromotion?.offerId)
+                .map(c => [c.parentPromotion.offerId, c] as const)
+        )
+
+        const seen = new Set(parents.map(p => p.offerId))
+        for (const card of apiById.values()) {
+            const pp = card.parentPromotion
+            if (!pp?.offerId || seen.has(pp.offerId)) continue
+            parents.push({
+                offerId: pp.offerId,
+                title: pp.title ?? '',
+                pointProgressMax: pp.pointProgressMax ?? 0,
+                complete: !!pp.complete
+            })
+            seen.add(pp.offerId)
+        }
+
+        for (const p of parents) {
+            if (p.pointProgressMax <= 0) {
+                p.pointProgressMax = apiById.get(p.offerId)?.parentPromotion?.pointProgressMax ?? p.pointProgressMax
+            }
+        }
+
+        const incomplete = parents.filter(p => {
+            if (p.complete) return false
+            if (this.bot.config.skipNonPointTasks && p.pointProgressMax <= 0) return false
+            return true
+        })
+        if (!incomplete.length) {
+            this.bot.logger.info(this.bot.isMobile, 'PUNCHCARD', 'No actionable quests')
+            return
+        }
+
+        this.bot.logger.info(
+            this.bot.isMobile,
+            'PUNCHCARD',
+            `Found ${incomplete.length} incomplete quest(s) on /earn | api-matched=${incomplete.filter(p => apiById.has(p.offerId)).length}`
+        )
+
+        for (const parent of incomplete) {
+            try {
+                await this.solvePunchCard(parent, apiById.get(parent.offerId), page)
+            } catch (error) {
+                this.bot.logger.error(
+                    this.bot.isMobile,
+                    'PUNCHCARD',
+                    `Error solving quest "${parent.title || parent.offerId}" | message=${error instanceof Error ? error.message : String(error)}`
+                )
+            }
+        }
+
+        this.bot.logger.info(this.bot.isMobile, 'PUNCHCARD', 'Finished processing quests')
+    }
+
+    public async doClaimBonusPoints(data: DashboardData) {
+        const pointsActivity = data.dashboard.pointClaimBannerPromotion
+
+        if (!pointsActivity) {
+            this.bot.logger.info(this.bot.isMobile, 'CLAIM-BONUS-POINTS', 'No claim bonus points banner found')
+            return
+        }
+
+        if (pointsActivity.complete) {
+            this.bot.logger.info(
+                this.bot.isMobile,
+                'CLAIM-BONUS-POINTS',
+                `Bonus points have already been claimed | offerId=${pointsActivity.offerId}`
+            )
+            return
+        }
+
+        await this.bot.activities.doClaimBonusPoints()
+
+        this.bot.logger.info(
+            this.bot.isMobile,
+            'CLAIM-BONUS-POINTS',
+            `Bonus points have been claimed | title="${pointsActivity.title}" | offerId=${pointsActivity.offerId}`
+        )
+    }
+
+    private async solvePunchCard(parent: ParentQuest, apiCard: PunchCard | undefined, page: Page) {
+        const parentId = parent.offerId
+        const title = parent.title || apiCard?.parentPromotion?.title || parentId
+
+        let questChildren: QuestChild[]
+        try {
+            const res = await page.request.get(URLs.rewards.quest(parentId))
+            if (!res.ok()) {
+                this.bot.logger.warn(
+                    this.bot.isMobile,
+                    'PUNCHCARD',
+                    `Quest page ${res.status()} for "${title}" - skipping`
+                )
+                return
+            }
+            questChildren = this.bot.browser.react.snapshotQuestPage(await res.text())
+        } catch (error) {
+            this.bot.logger.warn(
+                this.bot.isMobile,
+                'PUNCHCARD',
+                `Failed fetching quest page for "${title}" | ${error instanceof Error ? error.message : String(error)}`
+            )
+            return
+        }
+
+        if (!questChildren.length) {
+            this.bot.logger.info(this.bot.isMobile, 'PUNCHCARD', `No actionable children rendered for "${title}"`)
+            return
+        }
+
+        const apiChildById = new Map(
+            (apiCard?.childPromotions ?? []).filter(c => c.offerId).map(c => [c.offerId, c] as const)
+        )
+        const ordered = [...questChildren].sort(
+            (a, b) =>
+                (apiChildById.get(a.offerId)?.priority ?? Number.MAX_SAFE_INTEGER) -
+                (apiChildById.get(b.offerId)?.priority ?? Number.MAX_SAFE_INTEGER)
+        )
+
+        this.bot.logger.info(
+            this.bot.isMobile,
+            'PUNCHCARD',
+            `Solving "${title}" | children=${ordered.length} | reportable=${ordered.filter(c => c.reportable).length}`
+        )
+
+        const startBalance = this.bot.userData.currentPoints
+        let reported = 0
+        let remaining = 0
+
+        for (const child of ordered) {
+            const offerId = child.offerId
+            const api = apiChildById.get(offerId)
+
+            if (!child.reportable) {
+                remaining++
+                this.bot.logger.debug(
+                    this.bot.isMobile,
+                    'PUNCHCARD',
+                    `Skip ${offerId}: not reportable (locked=${child.isLocked} disabled=${child.isDisabled} done=${child.isCompleted} hash=${!!child.hash})`
+                )
                 continue
             }
 
-            // Get latest page for each card
-            page = await this.bot.browser.utils.getLatestTab(page)
-
-            const activitiesUncompleted = punchCard.childPromotions.filter(x => !x.complete) // Only return uncompleted activities
-
-            // Solve Activities
-            this.bot.log(this.bot.isMobile, 'PUNCH-CARD', `Started solving "Punch Card" items for punchcard: "${punchCard.parentPromotion.title}"`)
-
-            // Got to punch card index page in a new tab
-            await page.goto(punchCard.parentPromotion.destinationUrl, { referer: this.bot.config.baseURL })
-
-            // Wait for new page to load, max 10 seconds, however try regardless in case of error
-            await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => { })
-
-            await this.solveActivities(page, activitiesUncompleted, punchCard)
-
-            page = await this.bot.browser.utils.getLatestTab(page)
-
-            const pages = page.context().pages()
-
-            if (pages.length > 3) {
-                await page.close()
-            } else {
-                await this.bot.browser.func.goHome(page)
+            if (this.isSearchQuotaChild(offerId, api)) {
+                remaining++
+                this.bot.logger.info(this.bot.isMobile, 'PUNCHCARD', `Skip ${offerId}: multi-day search task`)
+                continue
             }
 
-            this.bot.log(this.bot.isMobile, 'PUNCH-CARD', `All items for punchcard: "${punchCard.parentPromotion.title}" have been completed`)
+            if (this.isClaimChild(offerId, api)) {
+                if (!this.bot.config.autoClaimPunchcardRewards) {
+                    remaining++
+                    this.bot.logger.info(
+                        this.bot.isMobile,
+                        'PUNCHCARD',
+                        `Reward for "${title}" ready to claim - left for manual redemption (autoClaimPunchcardRewards=false) | ${offerId}`
+                    )
+                    continue
+                }
+                await this.bot.activities.doClaimReward(child, parentId)
+                reported++
+                continue
+            }
+
+            await this.reportQuestChild(child, parentId)
+            reported++
+            await this.bot.utils.wait(this.bot.utils.randomDelay(5000, 15000))
         }
 
-        this.bot.log(this.bot.isMobile, 'PUNCH-CARD', 'All "Punch Card" items have been completed')
+        const gained = this.bot.userData.currentPoints - startBalance
+        this.bot.logger.info(
+            this.bot.isMobile,
+            'PUNCHCARD',
+            `Quest "${title}" ${remaining === 0 ? 'COMPLETE' : 'in progress'} | reported=${reported}${remaining ? ` | remaining=${remaining}` : ''} | gainedPoints=${gained}${parent.pointProgressMax > 0 ? `/${parent.pointProgressMax}` : ''}`,
+            gained > 0 ? 'green' : undefined
+        )
     }
 
-    // More Promotions
-    async doMorePromotions(page: Page, data: DashboardData) {
-        const morePromotions = data.morePromotions
-
-        // Check if there is a promotional item
-        if (data.promotionalItem) { // Convert and add the promotional item to the array
-            morePromotions.push(data.promotionalItem as unknown as MorePromotion)
+    private async reportQuestChild(child: QuestChild, parentId: string) {
+        const offerId = child.offerId
+        const actionId = this.bot.nextActions.reportActivity
+        if (!actionId) {
+            this.bot.logger.warn(this.bot.isMobile, 'PUNCHCARD', `Skip ${offerId}: "reportActivity" not discovered`)
+            return
         }
-
-        const activitiesUncompleted = morePromotions?.filter(x => !x.complete && x.pointProgressMax > 0 && x.exclusiveLockedFeatureStatus !== 'locked') ?? []
-
-        if (!activitiesUncompleted.length) {
-            this.bot.log(this.bot.isMobile, 'MORE-PROMOTIONS', 'All "More Promotion" items have already been completed')
+        if (!child.hash) {
+            this.bot.logger.warn(this.bot.isMobile, 'PUNCHCARD', `Skip ${offerId}: no live hash on quest child`)
             return
         }
 
-        // Solve Activities
-        this.bot.log(this.bot.isMobile, 'MORE-PROMOTIONS', 'Started solving "More Promotions" items')
-
-        page = await this.bot.browser.utils.getLatestTab(page)
-
-        await this.solveActivities(page, activitiesUncompleted)
-
-        page = await this.bot.browser.utils.getLatestTab(page)
-
-        // Always return to the homepage if not already
-        await this.bot.browser.func.goHome(page)
-
-        this.bot.log(this.bot.isMobile, 'MORE-PROMOTIONS', 'All "More Promotion" items have been completed')
-    }
-
-    // Solve all the different types of activities
-    private async solveActivities(activityPage: Page, activities: PromotionalItem[] | MorePromotion[], punchCard?: PunchCard) {
-        const activityInitial = activityPage.url() // Homepage for Daily/More and Index for promotions
-
-        for (const activity of activities) {
-            try {
-                // Reselect the worker page
-                activityPage = await this.bot.browser.utils.getLatestTab(activityPage)
-
-                const pages = activityPage.context().pages()
-                if (pages.length > 3) {
-                    await activityPage.close()
-
-                    activityPage = await this.bot.browser.utils.getLatestTab(activityPage)
+        const oldBalance = this.bot.userData.currentPoints
+        try {
+            const questUrl = URLs.rewards.quest(parentId)
+            const { status, acknowledged } = await this.bot.browser.func.reportServerAction(
+                actionId,
+                [
+                    child.hash,
+                    11,
+                    { offerid: offerId, isPromotional: '$undefined', timezoneOffset: this.bot.userData.timezoneOffset }
+                ],
+                {
+                    url: questUrl,
+                    referer: questUrl,
+                    routerStateTree: this.bot.browser.react.questRouterStateTree(parentId)
                 }
+            )
 
-                await this.bot.utils.wait(1000)
-
-                if (activityPage.url() !== activityInitial) {
-                    await activityPage.goto(activityInitial)
-                }
-
-
-                let selector = `[data-bi-id^="${activity.offerId}"] .pointLink:not(.contentContainer .pointLink)`
-
-                if (punchCard) {
-                    selector = await this.bot.browser.func.getPunchCardActivity(activityPage, activity)
-
-                } else if (activity.name.toLowerCase().includes('membercenter') || activity.name.toLowerCase().includes('exploreonbing')) {
-                    selector = `[data-bi-id^="${activity.name}"] .pointLink:not(.contentContainer .pointLink)`
-                }
-
-                // Wait for the new tab to fully load, ignore error.
-                /*
-                Due to common false timeout on this function, we're ignoring the error regardless, if it worked then it's faster,
-                if it didn't then it gave enough time for the page to load.
-                */
-                await activityPage.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => { })
-                await this.bot.utils.wait(2000)
-
-                switch (activity.promotionType) {
-                    // Quiz (Poll, Quiz or ABC)
-                    case 'quiz':
-                        switch (activity.pointProgressMax) {
-                            // Poll or ABC (Usually 10 points)
-                            case 10:
-                                // Normal poll
-                                if (activity.destinationUrl.toLowerCase().includes('pollscenarioid')) {
-                                    this.bot.log(this.bot.isMobile, 'ACTIVITY', `Found activity type: "Poll" title: "${activity.title}"`)
-                                    await activityPage.click(selector)
-                                    activityPage = await this.bot.browser.utils.getLatestTab(activityPage)
-                                    await this.bot.activities.doPoll(activityPage)
-                                } else { // ABC
-                                    this.bot.log(this.bot.isMobile, 'ACTIVITY', `Found activity type: "ABC" title: "${activity.title}"`)
-                                    await activityPage.click(selector)
-                                    activityPage = await this.bot.browser.utils.getLatestTab(activityPage)
-                                    await this.bot.activities.doABC(activityPage)
-                                }
-                                break
-
-                            // This Or That Quiz (Usually 50 points)
-                            case 50:
-                                this.bot.log(this.bot.isMobile, 'ACTIVITY', `Found activity type: "ThisOrThat" title: "${activity.title}"`)
-                                await activityPage.click(selector)
-                                activityPage = await this.bot.browser.utils.getLatestTab(activityPage)
-                                await this.bot.activities.doThisOrThat(activityPage)
-                                break
-
-                            // Quizzes are usually 30-40 points
-                            default:
-                                this.bot.log(this.bot.isMobile, 'ACTIVITY', `Found activity type: "Quiz" title: "${activity.title}"`)
-                                await activityPage.click(selector)
-                                activityPage = await this.bot.browser.utils.getLatestTab(activityPage)
-                                await this.bot.activities.doQuiz(activityPage)
-                                break
-                        }
-                        break
-
-                    // UrlReward (Visit)
-                    case 'urlreward':
-                        // Search on Bing are subtypes of "urlreward"
-                        if (activity.name.toLowerCase().includes('exploreonbing')) {
-                            this.bot.log(this.bot.isMobile, 'ACTIVITY', `Found activity type: "SearchOnBing" title: "${activity.title}"`)
-                            await activityPage.click(selector)
-                            activityPage = await this.bot.browser.utils.getLatestTab(activityPage)
-                            await this.bot.activities.doSearchOnBing(activityPage, activity)
-
-                        } else {
-                            this.bot.log(this.bot.isMobile, 'ACTIVITY', `Found activity type: "UrlReward" title: "${activity.title}"`)
-                            await activityPage.click(selector)
-                            activityPage = await this.bot.browser.utils.getLatestTab(activityPage)
-                            await this.bot.activities.doUrlReward(activityPage)
-                        }
-                        break
-
-                    // Unsupported types
-                    default:
-                        this.bot.log(this.bot.isMobile, 'ACTIVITY', `Skipped activity "${activity.title}" | Reason: Unsupported type: "${activity.promotionType}"!`, 'warn')
-                        break
-                }
-
-                // Cooldown
-                await this.bot.utils.wait(2000)
-
-            } catch (error) {
-                this.bot.log(this.bot.isMobile, 'ACTIVITY', 'An error occurred:' + error, 'error')
+            const newBalance = await this.bot.browser.func.getCurrentPoints()
+            const gained = newBalance - oldBalance
+            if (gained > 0) {
+                this.bot.userData.currentPoints = newBalance
+                this.bot.userData.gainedPoints = (this.bot.userData.gainedPoints ?? 0) + gained
             }
 
+            this.bot.logger.info(
+                this.bot.isMobile,
+                'PUNCHCARD',
+                `Reported child | offerId=${offerId} | status=${status} | acknowledged=${acknowledged}${gained > 0 ? ` | gainedPoints=${gained}` : ''}`,
+                gained > 0 || acknowledged ? 'green' : undefined
+            )
+        } catch (error) {
+            this.bot.logger.error(
+                this.bot.isMobile,
+                'PUNCHCARD',
+                `Error reporting child | offerId=${offerId} | message=${error instanceof Error ? error.message : String(error)}`
+            )
         }
     }
 
+    private async solveActivities(activities: BasePromotion[]) {
+        for (const activity of activities) {
+            try {
+                const type = activity.promotionType?.toLowerCase() ?? ''
+                const name = activity.name?.toLowerCase() ?? ''
+                const offerId = (activity as BasePromotion).offerId
+
+                this.bot.logger.debug(
+                    this.bot.isMobile,
+                    'ACTIVITY',
+                    `Processing activity | title="${activity.title}" | offerId=${offerId} | type=${type}`
+                )
+
+                switch (type) {
+                    case 'urlreward': {
+                        const basePromotion = activity as BasePromotion
+
+                        // Search on Bing are subtypes of "urlreward"
+                        const isSearchOnBing = name.includes('exploreonbing')
+
+                        if (isSearchOnBing && !this.bot.config.activities.searchOnBing) {
+                            this.bot.logger.info(
+                                this.bot.isMobile,
+                                'ACTIVITY',
+                                `Skipping "SearchOnBing" (disabled in config) | offerId=${offerId}`
+                            )
+                            continue
+                        }
+                        if (!isSearchOnBing && !this.bot.config.activities.urlReward) {
+                            this.bot.logger.info(
+                                this.bot.isMobile,
+                                'ACTIVITY',
+                                `Skipping "UrlReward" (disabled in config) | offerId=${offerId}`
+                            )
+                            continue
+                        }
+
+                        if (isSearchOnBing) {
+                            this.bot.logger.info(
+                                this.bot.isMobile,
+                                'ACTIVITY',
+                                `Found activity type "SearchOnBing" | title="${activity.title}" | offerId=${offerId}`
+                            )
+
+                            const page = this.bot.isMobile ? this.bot.mainMobilePage : this.bot.mainDesktopPage
+                            await this.bot.activities.doSearchOnBing(basePromotion, page)
+                        } else {
+                            this.bot.logger.info(
+                                this.bot.isMobile,
+                                'ACTIVITY',
+                                `Found activity type "UrlReward" | title="${activity.title}" | offerId=${offerId}`
+                            )
+
+                            await this.bot.activities.doUrlReward(basePromotion)
+                        }
+                        break
+                    }
+
+                    default: {
+                        this.bot.logger.warn(
+                            this.bot.isMobile,
+                            'ACTIVITY',
+                            `Skipped activity "${activity.title}" | offerId=${offerId} | Reason: Unsupported type "${activity.promotionType}"`
+                        )
+                        break
+                    }
+                }
+
+                await this.bot.utils.wait(this.bot.utils.randomDelay(5000, 15000))
+            } catch (error) {
+                this.bot.logger.error(
+                    this.bot.isMobile,
+                    'ACTIVITY',
+                    `Error while solving activity "${activity.title}" | message=${error instanceof Error ? error.message : String(error)}`
+                )
+            }
+        }
+    }
+
+    // Util
+    private isSearchQuotaChild(offerId: string, api?: BasePromotion): boolean {
+        if (api) {
+            const type = (api.promotionType ?? '').toLowerCase()
+            const attrType = String(api.attributes?.type ?? '').toLowerCase()
+            const dest = (api.destinationUrl ?? '').toLowerCase()
+            if (type === 'search' || attrType === 'search' || /bing\.com\/search/.test(dest)) {
+                return true
+            }
+        }
+
+        return /search/i.test(offerId) && /(day|streak|\dx)/i.test(offerId)
+    }
+
+    private isClaimChild(offerId: string, api?: BasePromotion): boolean {
+        const dest = (api?.destinationUrl ?? '').toLowerCase()
+        if (/\/redeem\//.test(dest)) return true
+        return /(redeem|claim|(?<!url)reward)/i.test(offerId)
+    }
 }

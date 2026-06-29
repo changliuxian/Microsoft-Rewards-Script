@@ -1,204 +1,136 @@
-import { BrowserContext, Page } from 'rebrowser-playwright'
-import { CheerioAPI, load } from 'cheerio'
-import axios,{ AxiosRequestConfig } from 'axios'
+import { randomBytes } from 'crypto'
 
-import { MicrosoftRewardsBot } from '../index'
-import { saveSessionData } from '../util/Load'
+import { URLs } from '../constants/urls'
+import { BING_APP_USER_AGENT } from '../constants/userAgents'
+import type { BrowserContext, Cookie, Page } from 'patchright'
+import type { HttpRequestConfig } from '../util/Http'
 
-import { Counters, DashboardData, MorePromotion, PromotionalItem } from './../interface/DashboardData'
-import { QuizData } from './../interface/QuizData'
-import { AppUserData } from '../interface/AppUserData'
-import { EarnablePoints } from '../interface/Points'
+import type { MicrosoftRewardsBot } from '../index'
+import { saveStorageState } from '../util/SessionStore'
+import { isBrowserClosedError } from '../util/Utils'
 
+import type { Counters, DashboardData } from './../interface/DashboardData'
+import type { AppUserData } from '../interface/AppUserData'
+import type { AppEarnablePoints, BrowserEarnablePoints, MissingSearchPoints } from '../interface/Points'
+import type { AppDashboardData } from '../interface/AppDashBoardData'
 
 export default class BrowserFunc {
     private bot: MicrosoftRewardsBot
+
+    private bingJars = new Map<string, Map<string, string>>()
 
     constructor(bot: MicrosoftRewardsBot) {
         this.bot = bot
     }
 
-
-    /**
-     * Navigate the provided page to rewards homepage
-     * @param {Page} page Playwright page
-    */
-    async goHome(page: Page) {
-
+    async getDashboardData(cookies?: Cookie[]): Promise<DashboardData> {
         try {
-            const dashboardURL = new URL(this.bot.config.baseURL)
-
-            if (page.url() === dashboardURL.href) {
-                return
+            const request: HttpRequestConfig = {
+                url: URLs.rewards.userInfoApi,
+                method: 'GET',
+                headers: {
+                    ...(this.bot.fingerprint?.headers ?? {}),
+                    Cookie: this.buildCookieHeader(cookies ?? this.bot.cookies.mobile, [
+                        'bing.com',
+                        'live.com',
+                        'microsoftonline.com'
+                    ]),
+                    Referer: URLs.rewards.referer,
+                    Origin: URLs.rewards.origin
+                }
             }
 
-            await page.goto(this.bot.config.baseURL)
+            const response = await this.bot.http.request(request)
 
-            const maxIterations = 5 // Maximum iterations set to 5
-
-            for (let iteration = 1; iteration <= maxIterations; iteration++) {
-                await this.bot.utils.wait(3000)
-                await this.bot.browser.utils.tryDismissAllMessages(page)
-
-                // Check if account is suspended
-                const isSuspended = await page.waitForSelector('#suspendedAccountHeader', { state: 'visible', timeout: 2000 }).then(() => true).catch(() => false)
-                if (isSuspended) {
-                    this.bot.log(this.bot.isMobile, 'GO-HOME', 'This account is suspended!', 'error')
-                    throw new Error('Account has been suspended!')
-                }
-
-                try {
-                    // If activities are found, exit the loop
-                    await page.waitForSelector('#more-activities', { timeout: 1000 })
-                    this.bot.log(this.bot.isMobile, 'GO-HOME', 'Visited homepage successfully')
-                    break
-
-                } catch (error) {
-                    // Continue if element is not found
-                }
-
-                // Below runs if the homepage was unable to be visited
-                const currentURL = new URL(page.url())
-
-                if (currentURL.hostname !== dashboardURL.hostname) {
-                    await this.bot.browser.utils.tryDismissAllMessages(page)
-
-                    await this.bot.utils.wait(2000)
-                    await page.goto(this.bot.config.baseURL)
-                } else {
-                    this.bot.log(this.bot.isMobile, 'GO-HOME', 'Visited homepage successfully')
-                    break
-                }
-
-                await this.bot.utils.wait(5000)
+            if (response.data) {
+                return response.data as DashboardData
             }
-
+            throw new Error('Dashboard data missing from API response')
         } catch (error) {
-            throw this.bot.log(this.bot.isMobile, 'GO-HOME', 'An error occurred:' + error, 'error')
+            throw this.bot.logger.error(
+                this.bot.isMobile,
+                'GET-DASHBOARD-DATA',
+                `Failed to get dashboard data: ${error instanceof Error ? error.message : String(error)}`
+            )
         }
     }
 
-    /**
-     * Fetch user dashboard data
-     * @returns {DashboardData} Object of user bing rewards dashboard data
-    */
-    async getDashboardData(): Promise<DashboardData> {
-        const dashboardURL = new URL(this.bot.config.baseURL)
-        const currentURL = new URL(this.bot.homePage.url())
-
+    async getAppDashboardData(): Promise<AppDashboardData> {
         try {
-            // Should never happen since tasks are opened in a new tab!
-            if (currentURL.hostname !== dashboardURL.hostname) {
-                this.bot.log(this.bot.isMobile, 'DASHBOARD-DATA', 'Provided page did not equal dashboard page, redirecting to dashboard page')
-                await this.goHome(this.bot.homePage)
-            }
-            let lastError: any = null
-            for (let attempt = 1; attempt <= 2; attempt++) {
-                try {
-                    // Reload the page to get new data
-                    await this.bot.homePage.reload({ waitUntil: 'domcontentloaded' })
-                    lastError = null
-                    break
-                } catch (re) {
-                    lastError = re
-                    const msg = (re instanceof Error ? re.message : String(re))
-                    this.bot.log(this.bot.isMobile, 'GET-DASHBOARD-DATA', `Reload failed attempt ${attempt}: ${msg}`, 'warn')
-                    // If page/context closed => bail early after first retry
-                    if (msg.includes('has been closed')) {
-                        if (attempt === 1) {
-                            this.bot.log(this.bot.isMobile, 'GET-DASHBOARD-DATA', 'Page appears closed; trying one navigation fallback', 'warn')
-                            try {
-                                await this.goHome(this.bot.homePage)
-                            } catch {/* ignore */}
-                        } else {
-                            break
-                        }
-                    }
-                    if (attempt === 2 && lastError) throw lastError
-                    await this.bot.utils.wait(1000)
+            const request: HttpRequestConfig = {
+                url: URLs.platform.me('SAIOS'),
+                method: 'GET',
+                headers: {
+                    Authorization: `Bearer ${this.bot.accessToken}`,
+                    'User-Agent': BING_APP_USER_AGENT
                 }
             }
 
-            const scriptContent = await this.bot.homePage.evaluate(() => {
-                const scripts = Array.from(document.querySelectorAll('script'))
-                const targetScript = scripts.find(script => script.innerText.includes('var dashboard'))
-
-                return targetScript?.innerText ? targetScript.innerText : null
-            })
-
-            if (!scriptContent) {
-                throw this.bot.log(this.bot.isMobile, 'GET-DASHBOARD-DATA', 'Dashboard data not found within script', 'error')
-            }
-
-            // Extract the dashboard object from the script content
-            const dashboardData = await this.bot.homePage.evaluate((scriptContent: string) => {
-                // Extract the dashboard object using regex
-                const regex = /var dashboard = (\{.*?\});/s
-                const match = regex.exec(scriptContent)
-
-                if (match && match[1]) {
-                    return JSON.parse(match[1])
-                }
-
-            }, scriptContent)
-
-            if (!dashboardData) {
-                throw this.bot.log(this.bot.isMobile, 'GET-DASHBOARD-DATA', 'Unable to parse dashboard script', 'error')
-            }
-
-            return dashboardData
-
+            const response = await this.bot.http.request(request)
+            return response.data as AppDashboardData
         } catch (error) {
-            throw this.bot.log(this.bot.isMobile, 'GET-DASHBOARD-DATA', `Error fetching dashboard data: ${error}`, 'error')
+            this.bot.logger.error(
+                this.bot.isMobile,
+                'GET-APP-DASHBOARD-DATA',
+                `Error fetching dashboard data: ${error instanceof Error ? error.message : String(error)}`
+            )
+            throw error
         }
-
     }
 
-    /**
-     * Get search point counters
-     * @returns {Counters} Object of search counter data
-    */
     async getSearchPoints(): Promise<Counters> {
         const dashboardData = await this.getDashboardData() // Always fetch newest data
 
-        return dashboardData.userStatus.counters
+        return dashboardData.dashboard.userStatus.counters
     }
 
-    /**
-     * Get total earnable points with web browser
-     * @returns {number} Total earnable points
-    */
-    async getBrowserEarnablePoints(): Promise<EarnablePoints> {
-        try {
-            let desktopSearchPoints = 0
-            let mobileSearchPoints = 0
-            let dailySetPoints = 0
-            let morePromotionsPoints = 0
+    missingSearchPoints(counters: Counters, isMobile: boolean): MissingSearchPoints {
+        const mobileData = counters.mobileSearch?.[0]
+        const desktopData = counters.pcSearch?.[0]
+        const edgeData = counters.pcSearch?.[1]
 
+        const mobilePoints = mobileData ? Math.max(0, mobileData.pointProgressMax - mobileData.pointProgress) : 0
+        const desktopPoints = desktopData ? Math.max(0, desktopData.pointProgressMax - desktopData.pointProgress) : 0
+        const edgePoints = edgeData ? Math.max(0, edgeData.pointProgressMax - edgeData.pointProgress) : 0
+
+        const totalPoints = isMobile ? mobilePoints : desktopPoints + edgePoints
+
+        return { mobilePoints, desktopPoints, edgePoints, totalPoints }
+    }
+
+    async getBrowserEarnablePoints(): Promise<BrowserEarnablePoints> {
+        try {
             const data = await this.getDashboardData()
 
-            // Desktop Search Points
-            if (data.userStatus.counters.pcSearch?.length) {
-                data.userStatus.counters.pcSearch.forEach(x => desktopSearchPoints += (x.pointProgressMax - x.pointProgress))
-            }
+            const desktopSearchPoints =
+                data.dashboard.userStatus.counters.pcSearch?.reduce(
+                    (sum: number, x: { pointProgressMax: number; pointProgress: number }) =>
+                        sum + (x.pointProgressMax - x.pointProgress),
+                    0
+                ) ?? 0
 
-            // Mobile Search Points
-            if (data.userStatus.counters.mobileSearch?.length) {
-                data.userStatus.counters.mobileSearch.forEach(x => mobileSearchPoints += (x.pointProgressMax - x.pointProgress))
-            }
+            const mobileSearchPoints =
+                data.dashboard.userStatus.counters.mobileSearch?.reduce(
+                    (sum: number, x: { pointProgressMax: number; pointProgress: number }) =>
+                        sum + (x.pointProgressMax - x.pointProgress),
+                    0
+                ) ?? 0
 
-            // Daily Set
-            data.dailySetPromotions[this.bot.utils.getFormattedDate()]?.forEach(x => dailySetPoints += (x.pointProgressMax - x.pointProgress))
+            const todayDate = this.bot.utils.getFormattedDate()
+            const dailySetPoints =
+                data.dashboard.dailySetPromotions[todayDate]?.reduce(
+                    (sum: number, x: { pointProgressMax: number; pointProgress: number }) =>
+                        sum + (x.pointProgressMax - x.pointProgress),
+                    0
+                ) ?? 0
 
-            // More Promotions
-            if (data.morePromotions?.length) {
-                data.morePromotions.forEach(x => {
-                    // Only count points from supported activities
-                    if (['quiz', 'urlreward'].includes(x.promotionType) && x.exclusiveLockedFeatureStatus !== 'locked') {
-                        morePromotionsPoints += (x.pointProgressMax - x.pointProgress)
+            const morePromotionsPoints =
+                data.dashboard.morePromotions?.reduce((sum, x) => {
+                    if (x.promotionType === 'urlreward' && x.exclusiveLockedFeatureStatus !== 'locked') {
+                        return sum + (x.pointProgressMax - x.pointProgress)
                     }
-                })
-            }
+                    return sum
+                }, 0) ?? 0
 
             const totalEarnablePoints = desktopSearchPoints + mobileSearchPoints + dailySetPoints + morePromotionsPoints
 
@@ -210,194 +142,555 @@ export default class BrowserFunc {
                 totalEarnablePoints
             }
         } catch (error) {
-            throw this.bot.log(this.bot.isMobile, 'GET-BROWSER-EARNABLE-POINTS', 'An error occurred:' + error, 'error')
+            this.bot.logger.error(
+                this.bot.isMobile,
+                'GET-BROWSER-EARNABLE-POINTS',
+                `An error occurred: ${error instanceof Error ? error.message : String(error)}`
+            )
+            throw error
         }
     }
 
-    /**
-     * Get total earnable points with mobile app
-     * @returns {number} Total earnable points
-    */
-    async getAppEarnablePoints(accessToken: string) {
+    async getAppEarnablePoints(): Promise<AppEarnablePoints> {
         try {
-            const points = {
-                readToEarn: 0,
-                checkIn: 0,
-                totalEarnablePoints: 0
-            }
+            const eligibleOffers = ['ENUS_readarticle3_30points', 'Gamification_Sapphire_DailyCheckIn']
 
-            const eligibleOffers = [
-                'ENUS_readarticle3_30points',
-                'Gamification_Sapphire_DailyCheckIn'
-            ]
-
-            const [, geo] = await this.getGeoLocale()
-
-            const userDataRequest: AxiosRequestConfig = {
-                url: 'https://prod.rewardsplatform.microsoft.com/dapi/me?channel=SAAndroid&options=613',
+            const request: HttpRequestConfig = {
+                url: URLs.platform.me('SAAndroid'),
                 method: 'GET',
                 headers: {
-                    'Authorization': `Bearer ${accessToken}`,
-                    'X-Rewards-Country': geo.toLocaleLowerCase(),
-                    'X-Rewards-Language': 'en'
+                    Authorization: `Bearer ${this.bot.accessToken}`,
+                    'X-Rewards-Country': this.bot.userData.geoLocale,
+                    'X-Rewards-Language': 'en',
+                    'X-Rewards-ismobile': 'true'
                 }
             }
 
-            const userDataResponse: AppUserData = (await this.bot.axios.request(userDataRequest)).data
-            const userData = userDataResponse.response
-            const eligibleActivities = userData.promotions.filter((x) => eligibleOffers.includes(x.attributes.offerid ?? ''))
+            const response = await this.bot.http.request<AppUserData>(request)
+            const userData: AppUserData = response.data
+            const eligibleActivities = userData.response.promotions.filter(x =>
+                eligibleOffers.includes(x.attributes.offerid ?? '')
+            )
+
+            let readToEarn = 0
+            let checkIn = 0
 
             for (const item of eligibleActivities) {
-                if (item.attributes.type === 'msnreadearn') {
-                    points.readToEarn = parseInt(item.attributes.pointmax ?? '') - parseInt(item.attributes.pointprogress ?? '')
-                    break
-                } else if (item.attributes.type === 'checkin') {
-                    const checkInDay = parseInt(item.attributes.progress ?? '') % 7
+                const attrs = item.attributes
 
-                    if (checkInDay < 6 && (new Date()).getDate() != (new Date(item.attributes.last_updated ?? '')).getDate()) {
-                        points.checkIn = parseInt(item.attributes['day_' + (checkInDay + 1) + '_points'] ?? '')
+                if (attrs.type === 'msnreadearn') {
+                    const pointMax = parseInt(attrs.pointmax ?? '0')
+                    const pointProgress = parseInt(attrs.pointprogress ?? '0')
+                    readToEarn = Math.max(0, pointMax - pointProgress)
+                } else if (attrs.type === 'checkin') {
+                    const progress = parseInt(attrs.progress ?? '0')
+                    const checkInDay = progress % 7
+                    const lastUpdated = new Date(attrs.last_updated ?? '')
+                    const today = new Date()
+
+                    if (checkInDay < 6 && today.getDate() !== lastUpdated.getDate()) {
+                        checkIn = parseInt(attrs[`day_${checkInDay + 1}_points`] ?? '0')
                     }
-                    break
                 }
             }
 
-            points.totalEarnablePoints = points.readToEarn + points.checkIn
+            const totalEarnablePoints = readToEarn + checkIn
 
-            return points
+            return {
+                readToEarn,
+                checkIn,
+                totalEarnablePoints
+            }
         } catch (error) {
-            throw this.bot.log(this.bot.isMobile, 'GET-APP-EARNABLE-POINTS', 'An error occurred:' + error, 'error')
+            this.bot.logger.error(
+                this.bot.isMobile,
+                'GET-APP-EARNABLE-POINTS',
+                `An error occurred: ${error instanceof Error ? error.message : String(error)}`
+            )
+            throw error
         }
     }
 
-    /**
-     * Get current point amount
-     * @returns {number} Current total point amount
-    */
     async getCurrentPoints(): Promise<number> {
         try {
             const data = await this.getDashboardData()
 
-            return data.userStatus.availablePoints
+            return data.dashboard.userStatus.availablePoints
         } catch (error) {
-            throw this.bot.log(this.bot.isMobile, 'GET-CURRENT-POINTS', 'An error occurred:' + error, 'error')
+            this.bot.logger.error(
+                this.bot.isMobile,
+                'GET-CURRENT-POINTS',
+                `An error occurred: ${error instanceof Error ? error.message : String(error)}`
+            )
+            throw error
         }
     }
 
-    /**
-     * Parse quiz data from provided page
-     * @param {Page} page Playwright page
-     * @returns {QuizData} Quiz data object
-    */
-    async getQuizData(page: Page): Promise<QuizData> {
+    async bootstrap(page: Page): Promise<void> {
         try {
-            const html = await page.content()
-            const $ = load(html)
+            // /earn is the offers page
+            await page.goto(URLs.rewards.earn, { waitUntil: 'domcontentloaded' })
+            const earnHtml = await page.content()
 
-            const scriptContent = $('script').filter((index: number, element: any) => {
-                return $(element).text().includes('_w.rewardsQuizRenderInfo')
-            }).text()
+            this.bot.nextRouterStateTree = this.bot.browser.react.routerStateTree('earn')
 
-            if (scriptContent) {
-                const regex = /_w\.rewardsQuizRenderInfo\s*=\s*({.*?});/s
-                const match = regex.exec(scriptContent)
+            //offers (valid hashes), streaks, account state
+            this.bot.reactSnapshot = this.bot.browser.react.snapshotPage(earnHtml)
 
-                if (match && match[1]) {
-                    const quizData = JSON.parse(match[1])
-                    return quizData
+            // pull /dashboard HTML to capture chunks that /earn doesn't show
+            let dashboardHtml = ''
+            try {
+                const res = await page.request.get(URLs.rewards.dashboard)
+                if (res.ok()) {
+                    dashboardHtml = await res.text()
                 } else {
-                    throw this.bot.log(this.bot.isMobile, 'GET-QUIZ-DATA', 'Quiz data not found within script', 'error')
+                    this.bot.logger.warn(
+                        this.bot.isMobile,
+                        'BOOTSTRAP',
+                        `Failed to fetch /dashboard HTML | status=${res.status()} - action discovery may be incomplete`
+                    )
                 }
-            } else {
-                throw this.bot.log(this.bot.isMobile, 'GET-QUIZ-DATA', 'Script containing quiz data not found', 'error')
+            } catch (error) {
+                this.bot.logger.warn(
+                    this.bot.isMobile,
+                    'BOOTSTRAP',
+                    `Failed to fetch /dashboard HTML | error=${error instanceof Error ? error.message : String(error)} - action discovery may be incomplete`
+                )
             }
 
-        } catch (error) {
-            throw this.bot.log(this.bot.isMobile, 'GET-QUIZ-DATA', 'An error occurred:' + error, 'error')
-        }
+            // discovered from chunks referenced by either page
+            this.bot.nextActions = await this.resolveActionIds(page, [earnHtml, dashboardHtml])
 
-    }
-
-    async waitForQuizRefresh(page: Page): Promise<boolean> {
-        try {
-            await page.waitForSelector('span.rqMCredits', { state: 'visible', timeout: 10000 })
-            await this.bot.utils.wait(2000)
-
-            return true
-        } catch (error) {
-            this.bot.log(this.bot.isMobile, 'QUIZ-REFRESH', 'An error occurred:' + error, 'error')
-            return false
-        }
-    }
-
-    async checkQuizCompleted(page: Page): Promise<boolean> {
-        try {
-            await page.waitForSelector('#quizCompleteContainer', { state: 'visible', timeout: 2000 })
-            await this.bot.utils.wait(2000)
-
-            return true
-        } catch (error) {
-            return false
-        }
-    }
-
-    async loadInCheerio(page: Page): Promise<CheerioAPI> {
-        const html = await page.content()
-        const $ = load(html)
-
-        return $
-    }
-
-    async getPunchCardActivity(page: Page, activity: PromotionalItem | MorePromotion): Promise<string> {
-        let selector = ''
-        try {
-            const html = await page.content()
-            const $ = load(html)
-
-            const element = $('.offer-cta').toArray().find((x: any) => x.attribs.href?.includes(activity.offerId))
-            if (element) {
-                selector = `a[href*="${element.attribs.href}"]`
+            const dashboardRendered = /<section\b[^>]*\bid=["']dailyset["']/i.test(dashboardHtml || earnHtml)
+            if (!dashboardRendered) {
+                throw new Error(
+                    'Rewards dashboard did not render (no section#dailyset) - likely a login/redirect issue, aborting'
+                )
             }
-        } catch (error) {
-            this.bot.log(this.bot.isMobile, 'GET-PUNCHCARD-ACTIVITY', 'An error occurred:' + error, 'error')
-        }
 
-        return selector
+            if (!this.bot.reactSnapshot.offers.length) {
+                this.bot.logger.warn(
+                    this.bot.isMobile,
+                    'BOOTSTRAP',
+                    'No offers parsed - page may not have rendered the RSC payload (check login/redirect)'
+                )
+            }
+
+            if (!Object.keys(this.bot.nextActions).length) {
+                this.bot.logger.warn(
+                    this.bot.isMobile,
+                    'BOOTSTRAP',
+                    'No action ids discovered - server-action calls will fail (bundle may have stripped names)'
+                )
+            }
+
+            this.bot.logger.info(
+                this.bot.isMobile,
+                'BOOTSTRAP',
+                `Context ready | actions=${Object.keys(this.bot.nextActions).length} | reportable=${this.bot.reactSnapshot.reportable.length} | available=${this.bot.reactSnapshot.account.availablePoints}`
+            )
+
+            this.bot.logger.info(
+                this.bot.isMobile,
+                'BUILD',
+                `Rewards build | id=${this.bot.browser.react.buildId(earnHtml) ?? 'unknown'}`
+            )
+        } catch (error) {
+            this.bot.logger.error(
+                this.bot.isMobile,
+                'BOOTSTRAP',
+                `Failed acquiring context | error=${error instanceof Error ? error.message : String(error)}`
+            )
+            throw error
+        }
     }
 
-    async getGeoLocale(): Promise<[string, string]> {
-        const defaultLang = this.bot.config.searchSettings.defaultLang
-        const defaultGeo = this.bot.config.searchSettings.defaultGeo
-
-        if (!this.bot.config.searchSettings.useGeoLocaleQueries) {
-            return [defaultLang, defaultGeo]
-        }
+    private async resolveActionIds(page: Page, htmls: string[]): Promise<Record<string, string>> {
+        const result: Record<string, string> = {}
 
         try {
-            const response = await axios.get('https://ipapi.co/json/')
-            const nfo = response.data
-            const lang = (nfo.languages as string)?.split(',')[0] ?? defaultLang
-            const geo = (nfo.country as string) ?? defaultGeo
-            return [lang, geo]
+            const initialChunks = new Set<string>()
+            const chunkRegex = /(?:\/_next\/)?(static\/chunks\/[\w\-./()]+?\.js)/g
+            for (const html of htmls) {
+                if (!html) continue
+                for (const match of html.matchAll(chunkRegex)) {
+                    initialChunks.add('/_next/' + match[1]!)
+                }
+            }
+
+            if (initialChunks.size === 0) {
+                this.bot.logger.warn(
+                    this.bot.isMobile,
+                    'BOOTSTRAP',
+                    'No initial chunks discovered in HTML - chunk reference shape may have changed'
+                )
+            }
+
+            this.bot.logger.debug(this.bot.isMobile, 'BOOTSTRAP', `Fetching ${initialChunks.size} initial JS chunks`)
+            const jsByPath = await this.fetchJsChunks(page, [...initialChunks])
+
+            // dynamically-imported chunks, server actions inside popover
+            const dynamicPaths: string[] = []
+            for (const js of jsByPath.values()) {
+                for (const path of this.extractDynamicChunkPaths(js)) {
+                    if (!jsByPath.has(path) && !dynamicPaths.includes(path)) {
+                        dynamicPaths.push(path)
+                    }
+                }
+            }
+
+            if (dynamicPaths.length) {
+                this.bot.logger.debug(
+                    this.bot.isMobile,
+                    'BOOTSTRAP',
+                    `Fetching ${dynamicPaths.length} dynamic chunks discovered via webpack manifest`
+                )
+                const moreJs = await this.fetchJsChunks(page, dynamicPaths)
+                for (const [path, js] of moreJs) jsByPath.set(path, js)
+            }
+
+            for (const [path, js] of jsByPath) {
+                const filename = path.split('/').pop() ?? path
+                const ids = this.bot.browser.react.extractActionIds(js)
+                const names = Object.keys(ids.byName)
+
+                if (names.length) {
+                    Object.assign(result, ids.byName)
+                    this.bot.logger.debug(
+                        this.bot.isMobile,
+                        'BOOTSTRAP',
+                        `Found ${names.length} action id(s) in ${filename}: [${names.join(', ')}]`
+                    )
+                } else {
+                    this.bot.logger.debug(this.bot.isMobile, 'BOOTSTRAP', `No server-action ids found in ${filename}`)
+                }
+
+                const namedSet = new Set(Object.values(ids.byName))
+                const unnamed = ids.all.filter(id => !namedSet.has(id))
+                if (unnamed.length) {
+                    this.bot.logger.debug(
+                        this.bot.isMobile,
+                        'BOOTSTRAP',
+                        `Found ${unnamed.length} unnamed action id(s) in ${filename}: [${unnamed.join(', ')}]`
+                    )
+                }
+            }
+
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                'BOOTSTRAP',
+                `Discovered ${Object.keys(result).length} action ids: [${Object.keys(result).join(', ')}]`
+            )
         } catch (error) {
-// 根据错误信息，`this.bot.log` 的第一个参数类型不匹配，这里假设使用 `this.bot.isMobile` 作为第一个参数
-this.bot.log(this.bot.isMobile, 'GET-GEOLOCALE', 'An error occurred: ' + error, 'error')
-            return [defaultLang, defaultGeo]
+            this.bot.logger.error(
+                this.bot.isMobile,
+                'BOOTSTRAP',
+                `Failed resolving action ids | error=${error instanceof Error ? error.message : String(error)}`
+            )
         }
+
+        return result
     }
 
+    private async fetchJsChunks(page: Page, paths: string[]): Promise<Map<string, string>> {
+        const result = new Map<string, string>()
+
+        await Promise.all(
+            paths.map(async path => {
+                try {
+                    const res = await page.request.get(URLs.rewards.path(path))
+                    if (res.ok()) {
+                        result.set(path, await res.text())
+                    }
+                } catch (error) {
+                    this.bot.logger.debug(
+                        this.bot.isMobile,
+                        'BOOTSTRAP',
+                        `Chunk fetch failed | path=${path} | ${error instanceof Error ? error.message : String(error)}`
+                    )
+                }
+            })
+        )
+
+        return result
+    }
+
+    private extractDynamicChunkPaths(js: string): string[] {
+        const seen = new Set<string>()
+
+        const builder = /static\/chunks\/"\s*\+\s*\w+\s*\+\s*"([-.])"\s*\+\s*\{([\s\S]*?)\}\s*\[/g
+        for (const match of js.matchAll(builder)) {
+            const sep = match[1]!
+            for (const [, id, hash] of match[2]!.matchAll(/(\d+)\s*:\s*"([a-f0-9]+)"/g)) {
+                seen.add(`/_next/static/chunks/${id}${sep}${hash}.js`)
+            }
+        }
+
+        // If the builder shape changes, scan id:hash pairs globally
+        if (!seen.size) {
+            for (const [, id, hash] of js.matchAll(/\b(\d{2,6}):"([a-f0-9]{12,})"/g)) {
+                seen.add(`/_next/static/chunks/${id}-${hash}.js`)
+                seen.add(`/_next/static/chunks/${id}.${hash}.js`)
+            }
+        }
+
+        return [...seen]
+    }
 
     async closeBrowser(browser: BrowserContext, email: string) {
+        const rootBrowser = browser.browser?.() || null
+
         try {
-            // Save cookies
-            await saveSessionData(this.bot.config.sessionPath, browser, email, this.bot.isMobile)
+            // Store state (cookies + localStorage) for next run
+            const storageState = await browser.storageState()
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                'CLOSE-BROWSER',
+                `Saving session | cookies=${storageState.cookies.length} | origins=${storageState.origins.length}`
+            )
+            saveStorageState(this.bot.config.sessionPath, email, this.bot.isMobile, storageState)
 
             await this.bot.utils.wait(2000)
-
-            // Close browser
-            await browser.close()
-            this.bot.log(this.bot.isMobile, 'CLOSE-BROWSER', 'Browser closed cleanly!')
         } catch (error) {
-            throw this.bot.log(this.bot.isMobile, 'CLOSE-BROWSER', 'An error occurred:' + error, 'error')
+            if (isBrowserClosedError(error)) {
+                this.bot.logger.debug(
+                    this.bot.isMobile,
+                    'CLOSE-BROWSER',
+                    `Session not saved (browser already closing): ${error instanceof Error ? error.message : String(error)}`
+                )
+            } else {
+                this.bot.logger.error(this.bot.isMobile, 'CLOSE-BROWSER', `Failed to save session: ${error}`)
+            }
+        } finally {
+            try {
+                await browser.close()
+
+                if (rootBrowser) {
+                    await rootBrowser.close().catch(() => {})
+                }
+
+                this.bot.logger.info(this.bot.isMobile, 'CLOSE-BROWSER', 'All browser resources closed.')
+            } catch (error) {
+                if (isBrowserClosedError(error)) {
+                    this.bot.logger.debug(this.bot.isMobile, 'CLOSE-BROWSER', 'Browser was already closed.')
+                } else {
+                    this.bot.logger.warn(
+                        this.bot.isMobile,
+                        'CLOSE-BROWSER',
+                        'Shutdown encountered an error, but process exiting.'
+                    )
+                }
+            }
+        }
+    }
+
+    buildCookieHeader(cookies: Cookie[], allowedDomains?: string[]): string {
+        return [
+            ...new Map(
+                cookies
+                    .filter(c => {
+                        if (!allowedDomains || allowedDomains.length === 0) return true
+                        return (
+                            typeof c.domain === 'string' &&
+                            allowedDomains.some(d => c.domain.toLowerCase().endsWith(d.toLowerCase()))
+                        )
+                    })
+                    .map(c => [c.name, c])
+            ).values()
+        ]
+            .map(c => `${c.name}=${c.value}`)
+            .join('; ')
+    }
+
+    // Fire a nextjs RSC server action shared by UrlReward / ClaimReward / ClaimBonusPoints
+    async reportServerAction(
+        actionId: string,
+        body: unknown[],
+        opts?: { url?: string; referer?: string; routerStateTree?: string }
+    ): Promise<{ status: number; acknowledged: boolean }> {
+        const url = opts?.url ?? URLs.rewards.earn
+        const referer = opts?.referer ?? url
+        const routerStateTree = opts?.routerStateTree ?? this.bot.nextRouterStateTree
+
+        const cookieHeader = this.buildCookieHeader(
+            this.bot.isMobile ? this.bot.cookies.mobile : this.bot.cookies.desktop,
+            ['bing.com', 'live.com', 'microsoftonline.com']
+        )
+
+        const fingerprintHeaders = { ...this.bot.fingerprint.headers }
+        delete fingerprintHeaders['Cookie']
+        delete fingerprintHeaders['cookie']
+
+        const request: HttpRequestConfig = {
+            url,
+            method: 'POST',
+            headers: {
+                ...fingerprintHeaders,
+                Cookie: cookieHeader,
+                Referer: referer,
+                Origin: URLs.rewards.origin,
+                Accept: 'text/x-component',
+                'Content-Type': 'text/plain;charset=UTF-8',
+                'Next-Action': actionId,
+                'Next-Router-State-Tree': routerStateTree
+            },
+            data: JSON.stringify(body)
+        }
+
+        const response = await this.bot.http.request(request)
+        const acknowledged = this.bot.utils.serverActionAcknowledged(response.data)
+
+        return { status: response.status, acknowledged }
+    }
+
+    async reportSearchActivity(
+        query: string,
+        opts?: { cvid?: string; cg?: string }
+    ): Promise<{
+        ig: string | null
+        balance: number | null
+        previousBalance: number | null
+        gained: number | null
+        searchPointsEarned: number | null
+        searchPointsLimit: number | null
+    }> {
+        const cvid = opts?.cvid ?? randomBytes(16).toString('hex')
+        const searchUrl = URLs.bing.search(query, cvid)
+        const jar = this.getBingJar()
+
+        const base = { ...(this.bot.fingerprint?.headers ?? {}) }
+        delete base['Cookie']
+        delete base['cookie']
+
+        const empty = {
+            ig: null,
+            balance: null,
+            previousBalance: null,
+            searchPointsEarned: null,
+            searchPointsLimit: null
+        }
+
+        const searchRes = await this.bot.http.request({
+            url: searchUrl,
+            method: 'GET',
+            headers: {
+                ...base,
+                Cookie: this.jarToHeader(jar),
+                Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Sec-Fetch-User': '?1',
+                'Upgrade-Insecure-Requests': '1'
+            }
+        })
+        this.mergeSetCookies(jar, searchRes.headers?.['set-cookie'] as string[] | string | undefined)
+
+        const ig =
+            typeof searchRes.data === 'string'
+                ? ((searchRes.data.match(/\bIG:"([A-F0-9]{32})"/i) ??
+                      searchRes.data.match(/[?&]IG=([A-F0-9]{32})\b/i))?.[1] ?? null)
+                : null
+        if (!ig) {
+            this.bot.logger.warn(
+                this.bot.isMobile,
+                'SEARCH-REPORT',
+                `No IG for "${query}" - SERP not served as expected`
+            )
+            return { ...empty, gained: null }
+        }
+
+        const params = new URLSearchParams({ IG: ig, IID: 'SERP.5064', q: query, FORM: 'ANNTA1', cvid, ajaxreq: '1' })
+        // Credit the offer rather than only the daily search counter!
+        const reportUrl = `${URLs.bing.origin}/rewardsapp/reportActivity?${params.toString()}${opts?.cg ? `&cg=${opts.cg}` : ''}`
+
+        const reportRes = await this.bot.http.request({
+            url: reportUrl,
+            method: 'POST',
+            headers: {
+                ...base,
+                Cookie: this.jarToHeader(jar),
+                Accept: '*/*',
+                'Content-Type': 'application/x-www-form-urlencoded',
+                Referer: searchUrl,
+                Origin: URLs.bing.origin,
+                'Sec-Fetch-Dest': 'empty',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Site': 'same-origin',
+                'X-Requested-With': 'XMLHttpRequest'
+            },
+            data: `url=${encodeURIComponent(searchUrl)}&V=web`
+        })
+        this.mergeSetCookies(jar, reportRes.headers?.['set-cookie'] as string[] | string | undefined)
+
+        const parsed = this.parseReportResponse(reportRes.data)
+        const gained =
+            parsed.balance != null && parsed.previousBalance != null ? parsed.balance - parsed.previousBalance : null
+
+        this.bot.logger.debug(
+            this.bot.isMobile,
+            'SEARCH-REPORT',
+            `Reported "${query}" | ig=${ig} | gained=${gained ?? 'n/a'} | balance=${parsed.balance ?? 'n/a'} | searchPts=${parsed.searchPointsEarned ?? 'n/a'}/${parsed.searchPointsLimit ?? 'n/a'}`
+        )
+
+        return { ig, ...parsed, gained }
+    }
+
+    private getBingJar(): Map<string, string> {
+        const src = this.bot.isMobile ? this.bot.cookies.mobile : this.bot.cookies.desktop
+        const key = `${src.find(c => c.name === '_U')?.value ?? ''}|${this.bot.isMobile}`
+        let jar = this.bingJars.get(key)
+        if (!jar) {
+            jar = new Map<string, string>()
+            for (const c of src) {
+                const domain = c.domain.replace(/^\./, '')
+                if (domain === 'bing.com' || domain.endsWith('.bing.com')) jar.set(c.name, c.value)
+            }
+            this.bingJars.set(key, jar)
+        }
+        return jar
+    }
+
+    private mergeSetCookies(jar: Map<string, string>, setCookie?: string[] | string): void {
+        if (!setCookie) return
+        for (const raw of Array.isArray(setCookie) ? setCookie : [setCookie]) {
+            const pair = raw.split(';', 1)[0] ?? ''
+            const eq = pair.indexOf('=')
+            if (eq <= 0) continue
+            const name = pair.slice(0, eq).trim()
+            const value = pair.slice(eq + 1).trim()
+            if (!name) continue
+            if (value === '' || /expires=Thu,\s*01\s*Jan\s*1970/i.test(raw) || /\bmax-age=0\b/i.test(raw))
+                jar.delete(name)
+            else jar.set(name, value)
+        }
+    }
+
+    private jarToHeader(jar: Map<string, string>): string {
+        return [...jar.entries()].map(([n, v]) => `${n}=${v}`).join('; ')
+    }
+
+    private parseReportResponse(data: unknown): {
+        balance: number | null
+        previousBalance: number | null
+        searchPointsEarned: number | null
+        searchPointsLimit: number | null
+    } {
+        const empty = { balance: null, previousBalance: null, searchPointsEarned: null, searchPointsLimit: null }
+        if (typeof data !== 'string') return empty
+        const m = data.match(/ModernRewards\.ReportActivity\((\{[\s\S]*?\})\)\s*;/)
+        if (!m) return empty
+        try {
+            const s = JSON.parse(m[1] ?? '{}').RewardsSessionData ?? {}
+            const num = (v: unknown) => (typeof v === 'number' ? v : null)
+            return {
+                balance: num(s.Balance),
+                previousBalance: num(s.PreviousBalance),
+                searchPointsEarned: num(s.DailySearchPointsEarned),
+                searchPointsLimit: num(s.DailySearchPointsLimit)
+            }
+        } catch {
+            return empty
         }
     }
 }

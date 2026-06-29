@@ -1,9 +1,12 @@
 sessions/
 dist/
+.dev/
 node_modules/
-accounts.json
-notes
-accounts.dev.json
-accounts.main.json
+/config.json
+/.vscode
+/diagnostics
+note
 .DS_Store
 .playwright-chromium-installed
+.stfolder/
+.env

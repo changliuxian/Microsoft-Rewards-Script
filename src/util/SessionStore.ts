@@ -1,0 +1,120 @@
+import { DatabaseSync } from 'node:sqlite'
+import fs from 'node:fs'
+import path from 'node:path'
+
+import type { BrowserContext } from 'patchright'
+import type { BrowserFingerprintWithHeaders } from 'fingerprint-generator'
+
+export type StorageState = Awaited<ReturnType<BrowserContext['storageState']>>
+
+export interface LoadedSession {
+    storageState: StorageState | null
+    fingerprint: BrowserFingerprintWithHeaders | null
+    updatedAt: number
+}
+
+interface SessionRow {
+    storage_state: string | null
+    fingerprint: string | null
+    updated_at: number
+}
+
+let db: DatabaseSync | null = null
+
+function platformOf(isMobile: boolean): 'mobile' | 'desktop' {
+    return isMobile ? 'mobile' : 'desktop'
+}
+
+function getDb(sessionPath: string): DatabaseSync {
+    if (db) return db
+
+    const dir = path.resolve(process.cwd(), sessionPath)
+    fs.mkdirSync(dir, { recursive: true })
+
+    db = new DatabaseSync(path.join(dir, 'sessions.db'))
+
+    db.exec('PRAGMA journal_mode = WAL')
+    db.exec('PRAGMA busy_timeout = 5000')
+    db.exec('PRAGMA synchronous = NORMAL')
+    db.exec(`
+        CREATE TABLE IF NOT EXISTS sessions (
+            email         TEXT NOT NULL,
+            platform      TEXT NOT NULL,
+            storage_state TEXT,
+            fingerprint   TEXT,
+            updated_at    INTEGER NOT NULL,
+            PRIMARY KEY (email, platform)
+        )
+    `)
+
+    return db
+}
+
+export function loadSession(
+    sessionPath: string,
+    email: string,
+    isMobile: boolean,
+    maxAgeMs?: number
+): LoadedSession | null {
+    const row = getDb(sessionPath)
+        .prepare('SELECT storage_state, fingerprint, updated_at FROM sessions WHERE email = ? AND platform = ?')
+        .get(email, platformOf(isMobile)) as SessionRow | undefined
+
+    if (!row) return null
+
+    if (maxAgeMs && Date.now() - row.updated_at > maxAgeMs) {
+        return null
+    }
+
+    return {
+        storageState: row.storage_state ? (JSON.parse(row.storage_state) as StorageState) : null,
+        fingerprint: row.fingerprint ? (JSON.parse(row.fingerprint) as BrowserFingerprintWithHeaders) : null,
+        updatedAt: row.updated_at
+    }
+}
+
+export function saveStorageState(
+    sessionPath: string,
+    email: string,
+    isMobile: boolean,
+    storageState: StorageState
+): void {
+    getDb(sessionPath)
+        .prepare(
+            `INSERT INTO sessions (email, platform, storage_state, updated_at)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT(email, platform)
+             DO UPDATE SET storage_state = excluded.storage_state, updated_at = excluded.updated_at`
+        )
+        .run(email, platformOf(isMobile), JSON.stringify(storageState), Date.now())
+}
+
+export function saveFingerprint(
+    sessionPath: string,
+    email: string,
+    isMobile: boolean,
+    fingerprint: BrowserFingerprintWithHeaders
+): void {
+    getDb(sessionPath)
+        .prepare(
+            `INSERT INTO sessions (email, platform, fingerprint, updated_at)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT(email, platform)
+             DO UPDATE SET fingerprint = excluded.fingerprint, updated_at = excluded.updated_at`
+        )
+        .run(email, platformOf(isMobile), JSON.stringify(fingerprint), Date.now())
+}
+
+// Unused
+export function deleteSession(sessionPath: string, email: string, isMobile: boolean): void {
+    getDb(sessionPath).prepare('DELETE FROM sessions WHERE email = ? AND platform = ?').run(email, platformOf(isMobile))
+}
+
+export function closeSessionStore(): void {
+    if (!db) return
+    try {
+        db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+        db.close()
+    } catch {}
+    db = null
+}

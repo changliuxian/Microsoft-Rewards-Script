@@ -1,19 +1,29 @@
-import { Page } from 'rebrowser-playwright'
+import type { MicrosoftRewardsBot } from '../index'
 
-import { MicrosoftRewardsBot } from '../index'
+// App
+import { DailyCheckIn } from './activities/app/DailyCheckIn'
+import { ReadToEarn } from './activities/app/ReadToEarn'
+import { AppReward } from './activities/app/AppReward'
 
-import { Search } from './activities/Search'
-import { ABC } from './activities/ABC'
-import { Poll } from './activities/Poll'
-import { Quiz } from './activities/Quiz'
-import { ThisOrThat } from './activities/ThisOrThat'
-import { UrlReward } from './activities/UrlReward'
-import { SearchOnBing } from './activities/SearchOnBing'
-import { ReadToEarn } from './activities/ReadToEarn'
-import { DailyCheckIn } from './activities/DailyCheckIn'
+// API
+import { UrlReward } from './activities/api/UrlReward'
+import { ClaimBonusPoints } from './activities/api/ClaimBonusPoints'
+import { EnsureStreakProtection } from './activities/api/EnsureStreakProtection'
+import { ClaimReward } from './activities/api/ClaimReward'
+import { ActivateSearchPerk } from './activities/api/ActivateSearchPerk'
 
-import { DashboardData, MorePromotion, PromotionalItem } from '../interface/DashboardData'
+// Browser
+import { Search as BrowserSearch } from './activities/browser/Search'
+import { SearchOnBing as BrowserSearchOnBing } from './activities/browser/SearchOnBing'
 
+// Experimental
+import { Search as ApiSearch } from './activities/api/Search'
+import { SearchOnBing as ApiSearchOnBing } from './activities/api/SearchOnBing'
+
+import type { Page } from 'patchright'
+import type { BasePromotion, DashboardData } from '../interface/DashboardData'
+import type { Promotion } from '../interface/AppDashBoardData'
+import type { QuestChild } from '../browser/ReactFunc'
 
 export default class Activities {
     private bot: MicrosoftRewardsBot
@@ -22,49 +32,68 @@ export default class Activities {
         this.bot = bot
     }
 
-    doSearch = async (page: Page, data: DashboardData): Promise<void> => {
-        const search = new Search(this.bot)
-        await search.doSearch(page, data)
+    // Search activities
+    doSearch = async (page: Page, isMobile: boolean): Promise<number> => {
+        if (this.bot.config.experimental.apiSearch) {
+            return await new ApiSearch(this.bot).doSearch(isMobile)
+        }
+        return await new BrowserSearch(this.bot).doSearch(page, isMobile)
     }
 
-    doABC = async (page: Page): Promise<void> => {
-        const abc = new ABC(this.bot)
-        await abc.doABC(page)
+    doBonusSearches = async (page: Page): Promise<number> => {
+        if (this.bot.config.experimental.apiSearch) {
+            return await new ApiSearch(this.bot).doBonusSearches()
+        }
+        return await new BrowserSearch(this.bot).doBonusSearches(page)
     }
 
-    doPoll = async (page: Page): Promise<void> => {
-        const poll = new Poll(this.bot)
-        await poll.doPoll(page)
+    doSearchOnBing = async (promotion: BasePromotion, page: Page): Promise<void> => {
+        if (this.bot.config.experimental.apiSearchOnBing) {
+            await new ApiSearchOnBing(this.bot).doSearchOnBing(promotion)
+            return
+        }
+        await new BrowserSearchOnBing(this.bot).doSearchOnBing(promotion, page)
     }
 
-    doThisOrThat = async (page: Page): Promise<void> => {
-        const thisOrThat = new ThisOrThat(this.bot)
-        await thisOrThat.doThisOrThat(page)
-    }
-
-    doQuiz = async (page: Page): Promise<void> => {
-        const quiz = new Quiz(this.bot)
-        await quiz.doQuiz(page)
-    }
-
-    doUrlReward = async (page: Page): Promise<void> => {
+    // API
+    doUrlReward = async (promotion: BasePromotion): Promise<void> => {
         const urlReward = new UrlReward(this.bot)
-        await urlReward.doUrlReward(page)
+        await urlReward.doUrlReward(promotion)
     }
 
-    doSearchOnBing = async (page: Page, activity: MorePromotion | PromotionalItem): Promise<void> => {
-        const searchOnBing = new SearchOnBing(this.bot)
-        await searchOnBing.doSearchOnBing(page, activity)
+    doClaimBonusPoints = async (): Promise<void> => {
+        const claimBonusPoints = new ClaimBonusPoints(this.bot)
+        await claimBonusPoints.claimBonusPoints()
     }
 
-    doReadToEarn = async (accessToken: string, data: DashboardData): Promise<void> => {
+    doEnsureStreakProtection = async (): Promise<void> => {
+        const ensureStreakProtection = new EnsureStreakProtection(this.bot)
+        await ensureStreakProtection.ensureStreakProtection()
+    }
+
+    doClaimReward = async (child: QuestChild, parentId: string): Promise<void> => {
+        const claimReward = new ClaimReward(this.bot)
+        await claimReward.claimReward(child, parentId)
+    }
+
+    doActivateSearchPerk = async (data: DashboardData): Promise<void> => {
+        const activateSearchPerk = new ActivateSearchPerk(this.bot)
+        await activateSearchPerk.activate(data)
+    }
+
+    // App
+    doAppReward = async (promotion: Promotion): Promise<void> => {
+        const urlReward = new AppReward(this.bot)
+        await urlReward.doAppReward(promotion)
+    }
+
+    doReadToEarn = async (): Promise<void> => {
         const readToEarn = new ReadToEarn(this.bot)
-        await readToEarn.doReadToEarn(accessToken, data)
+        await readToEarn.doReadToEarn()
     }
 
-    doDailyCheckIn = async (accessToken: string, data: DashboardData): Promise<void> => {
+    doDailyCheckIn = async (): Promise<void> => {
         const dailyCheckIn = new DailyCheckIn(this.bot)
-        await dailyCheckIn.doDailyCheckIn(accessToken, data)
+        await dailyCheckIn.doDailyCheckIn()
     }
-
 }

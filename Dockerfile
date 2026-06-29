@@ -1,7 +1,7 @@
 ###############################################################################
 # Stage 1: Builder
 ###############################################################################
-FROM node:22-slim AS builder
+FROM docker.m.daocloud.io/library/node:24-slim AS builder
 
 WORKDIR /usr/src/microsoft-rewards-script
 
@@ -11,7 +11,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=0
 COPY package.json package-lock.json tsconfig.json ./
 
 # Install all dependencies required to build the script
-RUN npm ci --ignore-scripts
+RUN npm ci --ignore-scripts --registry=https://registry.npmmirror.com
 
 # Copy source and build
 COPY . .
@@ -19,17 +19,17 @@ RUN npm run build
 
 # Remove build dependencies, and reinstall only runtime dependencies
 RUN rm -rf node_modules \
-    && npm ci --omit=dev --ignore-scripts \
+    && npm ci --omit=dev --ignore-scripts --registry=https://registry.npmmirror.com \
     && npm cache clean --force
 
 # Install Chromium Headless Shell, and cleanup
-RUN npx playwright install --with-deps --only-shell chromium \
-    && rm -rf /root/.cache /tmp/* /var/tmp/*
+RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources && \
+    npx patchright install --with-deps --only-shell chromium
 
 ###############################################################################
 # Stage 2: Runtime
 ###############################################################################
-FROM node:22-slim AS runtime
+FROM docker.m.daocloud.io/library/node:24-slim AS runtime
 
 WORKDIR /usr/src/microsoft-rewards-script
 
@@ -39,10 +39,13 @@ ENV NODE_ENV=production \
     PLAYWRIGHT_BROWSERS_PATH=0 \
     FORCE_HEADLESS=1
 
-# Install minimal system libraries required for Chromium headless to run
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Install minimal system libraries required for Chromium headless to run,
+# plus jq (for config generation/patching) and gettext-base (for envsubst)
+RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources && \
+    apt-get update && apt-get install -y --no-install-recommends \
     cron \
     gettext-base \
+    jq \
     tzdata \
     ca-certificates \
     libglib2.0-0 \
@@ -72,6 +75,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxss1 \
     libxtst6 \
     libdouble-conversion3 \
+    fonts-liberation \
+    fonts-noto-core \
+    fonts-noto-color-emoji \
+    fonts-freefont-ttf \
+    fonts-droid-fallback \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 
 # Copy compiled application and dependencies from builder stage
@@ -79,12 +87,28 @@ COPY --from=builder /usr/src/microsoft-rewards-script/dist ./dist
 COPY --from=builder /usr/src/microsoft-rewards-script/package*.json ./
 COPY --from=builder /usr/src/microsoft-rewards-script/node_modules ./node_modules
 
+# Install patchright's stealth-patched Chromium headless shell.
+# The container is headless-only so the full browser isn't needed; then clean up
+RUN set -eux; \
+    npx patchright install --with-deps --only-shell chromium; \
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
+# Copy config example into the image so entrypoint can use it as a fallback
+# when the user hasn't mounted their own config.json
+COPY config.example.json ./config.example.json
+
+# config.json is managed via the ./config bind mount (compose.yaml mounts
+# ./config to /usr/src/microsoft-rewards-script/config). On first run the
+# entrypoint generates config/config.json from this example if none exists,
+# then symlinks it to the project root where the script expects it.
+# Accounts come from ACCOUNT_N_* env vars, so no accounts.json is needed.
+
 # Copy runtime scripts with proper permissions from the start
-COPY --chmod=755 src/run_daily.sh ./src/run_daily.sh
+COPY --chmod=755 scripts/docker/run_daily.sh ./scripts/docker/run_daily.sh
 COPY --chmod=644 src/crontab.template /etc/cron.d/microsoft-rewards-cron.template
-COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY --chmod=755 scripts/docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 
-
-# Entrypoint handles TZ, initial run toggle, cron templating & launch
+# Entrypoint handles TZ, accounts/config generation, initial run toggle,
+# cron templating & launch
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 CMD ["sh", "-c", "echo 'Container started; cron is running.'"]
