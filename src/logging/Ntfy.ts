@@ -1,4 +1,5 @@
-import axios, { AxiosRequestConfig } from 'axios'
+import { httpRequest } from '../util/Http'
+import type { HttpRequestConfig } from '../util/Http'
 import PQueue from 'p-queue'
 import type { WebhookNtfyConfig } from '../interface/Config'
 import type { LogLevel } from './Logger'
@@ -33,7 +34,7 @@ export async function sendNtfy(config: WebhookNtfyConfig, content: string, level
 
     const url = config.topic ? `${config.url}/${config.topic}` : config.url
 
-    const request: AxiosRequestConfig = {
+    const request: HttpRequestConfig = {
         method: 'POST',
         url: url,
         headers,
@@ -43,19 +44,21 @@ export async function sendNtfy(config: WebhookNtfyConfig, content: string, level
 
     await ntfyQueue.add(async () => {
         try {
-            await axios(request)
-        } catch (err: any) {
-            const status = err?.response?.status
+            await httpRequest(request)
+        } catch (err) {
+            const status = (err as { response?: { status?: number } })?.response?.status
             if (status === 429) return
         }
     })
 }
 
 export async function flushNtfyQueue(timeoutMs = 5000): Promise<void> {
+    let timer: NodeJS.Timeout | undefined
     await Promise.race([
-        (async () => {
-            await ntfyQueue.onIdle()
-        })(),
-        new Promise<void>((_, reject) => setTimeout(() => reject(new Error('ntfy flush timeout')), timeoutMs))
+        ntfyQueue.onIdle(),
+        new Promise<void>((_, reject) => {
+            timer = setTimeout(() => reject(new Error('ntfy flush timeout')), timeoutMs)
+        })
     ]).catch(() => {})
+    if (timer) clearTimeout(timer)
 }

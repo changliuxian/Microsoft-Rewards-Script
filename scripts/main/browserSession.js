@@ -1,4 +1,3 @@
-import fs from 'fs'
 import { chromium } from 'patchright'
 import { newInjectedContext } from 'fingerprint-injector'
 import {
@@ -8,155 +7,199 @@ import {
     parseArgs,
     validateEmail,
     loadConfig,
-    loadAccounts,
+    loadAccountsFromEnv,
     findAccountByEmail,
-    getRuntimeBase,
-    getSessionPath,
-    loadCookies,
-    loadFingerprint,
     buildProxyConfig,
+    getSessionDbPath,
+    openSessionDb,
+    loadSessionRow,
+    closeSessionDb,
     setupCleanupHandlers
 } from '../utils.js'
+
+const REWARDS_URL = 'https://rewards.bing.com'
+
+const BROWSER_ARGS = [
+    '--mute-audio',
+    '--no-first-run',
+    '--no-default-browser-check',
+    '--disable-web-authentication-ui',
+    '--disable-external-intent-requests',
+    '--disable-blink-features=AutomationControlled,Attestation',
+    '--disable-features=WebAuthentication,PasswordManagerOnboarding,PasswordManager,EnablePasswordsAccountStorage,Passkeys,WebAuthenticationProxy,U2F',
+    '--disable-save-password-bubble',
+    '--disable-dev-shm-usage',
+    '--disable-background-networking',
+    '--disable-backgrounding-occluded-windows',
+    '--disable-renderer-backgrounding',
+    '--disable-component-update'
+]
 
 const __dirname = getDirname(import.meta.url)
 const projectRoot = getProjectRoot(__dirname)
 
 const args = parseArgs()
-args.dev = args.dev || false
 
 validateEmail(args.email)
 
-const { data: config } = loadConfig(projectRoot, args.dev)
-const { data: accounts } = loadAccounts(projectRoot, args.dev)
+const { data: config } = loadConfig(projectRoot)
 
+const channel = 'chrome'
+
+const accounts = loadAccountsFromEnv(projectRoot)
 const account = findAccountByEmail(accounts, args.email)
 if (!account) {
-    log('ERROR', `Account not found: ${args.email}`)
-    log('ERROR', 'Available accounts:')
-    accounts.forEach(acc => {
-        if (acc?.email) log('ERROR', `  - ${acc.email}`)
-    })
-    process.exit(1)
+    log('WARN', `No ACCOUNT_N_* block found in .env for ${args.email} - opening without a proxy`)
+}
+
+function platformsToTry() {
+    const p = typeof args.platform === 'string' ? args.platform.toLowerCase() : ''
+    if (p === 'mobile' || p === 'desktop') return [p]
+    return ['desktop', 'mobile'] // prefer desktop, fall back to mobile
 }
 
 async function main() {
-    const runtimeBase = getRuntimeBase(projectRoot, args.dev)
-    const sessionBase = getSessionPath(runtimeBase, config.sessionPath, args.email)
-
-    log('INFO', 'Validating session data...')
-
-    if (!fs.existsSync(sessionBase)) {
-        log('ERROR', `Session directory does not exist: ${sessionBase}`)
-        log('ERROR', 'Please ensure the session has been created for this account')
+    const { dbPath, exists } = getSessionDbPath(projectRoot, config.sessionPath)
+    if (!exists) {
+        log('ERROR', `No sessions.db found (looked for ${dbPath})`)
+        log('ERROR', 'Run the bot at least once so a session is stored for this account.')
         process.exit(1)
     }
 
-    if (!config.baseURL) {
-        log('ERROR', 'baseURL is not set in config.json')
-        process.exit(1)
-    }
+    const db = openSessionDb(dbPath, { readonly: true })
 
-    let cookies = await loadCookies(sessionBase, 'desktop')
-    let sessionType = 'desktop'
-
-    if (cookies.length === 0) {
-        log('WARN', 'No desktop session cookies found, trying mobile session...')
-        cookies = await loadCookies(sessionBase, 'mobile')
-        sessionType = 'mobile'
-
-        if (cookies.length === 0) {
-            log('ERROR', 'No cookies found in desktop or mobile session')
-            log('ERROR', `Session directory: ${sessionBase}`)
-            log('ERROR', 'Please ensure a valid session exists for this account')
-            process.exit(1)
+    let session = null
+    let platform = null
+    for (const p of platformsToTry()) {
+        try {
+            const row = loadSessionRow(db, args.email, p)
+            if (row && (row.storageState || row.fingerprint)) {
+                session = row
+                platform = p
+                break
+            }
+        } catch (error) {
+            log('WARN', `Could not read ${p} session: ${error.message}`)
         }
-
-        log('INFO', `Using mobile session (${cookies.length} cookies)`)
     }
+    closeSessionDb(db)
 
-    const isMobile = sessionType === 'mobile'
-    const fingerprintEnabled = isMobile ? account.saveFingerprint?.mobile : account.saveFingerprint?.desktop
-
-    let fingerprint = null
-    if (fingerprintEnabled) {
-        fingerprint = await loadFingerprint(sessionBase, sessionType)
-        if (!fingerprint) {
-            log('ERROR', `Fingerprint is enabled for ${sessionType} but fingerprint file not found`)
-            log('ERROR', `Expected file: ${sessionBase}/session_fingerprint_${sessionType}.json`)
-            log('ERROR', 'Cannot start browser without fingerprint when it is explicitly enabled')
-            process.exit(1)
-        }
-        log('INFO', `Loaded ${sessionType} fingerprint`)
-    }
-
-    const proxy = buildProxyConfig(account)
-
-    if (account.proxy && account.proxy.url && (!proxy || !proxy.server)) {
-        log('ERROR', 'Proxy is configured in account but proxy data is invalid or incomplete')
-        log('ERROR', 'Account proxy config:', JSON.stringify(account.proxy, null, 2))
-        log('ERROR', 'Required fields: proxy.url, proxy.port')
-        log('ERROR', 'Cannot start browser without proxy when it is explicitly configured')
+    if (!session) {
+        log('ERROR', `No stored session for ${args.email} in ${dbPath}`)
+        log('ERROR', 'Run the bot first, or double-check the email.')
         process.exit(1)
     }
 
+    const isMobile = platform === 'mobile'
+    const useInjector = engine === 'chromium' || isMobile
+    const { storageState, fingerprint } = session
+    const cookieCount = storageState?.cookies?.length ?? 0
+    const screen = fingerprint?.fingerprint?.screen
     const userAgent = fingerprint?.fingerprint?.navigator?.userAgent || fingerprint?.fingerprint?.userAgent || null
 
-    log('INFO', `Session: ${args.email} (${sessionType})`)
-    log('INFO', `  Cookies: ${cookies.length}`)
+    const proxy = account ? buildProxyConfig(account) : null
+    if (account?.proxy?.url && (!proxy || !proxy.server)) {
+        log('ERROR', 'Account proxy is configured but invalid (needs proxy url + port)')
+        process.exit(1)
+    }
+
+    log('INFO', `Session: ${args.email} (${platform})`)
+    log('INFO', `  Engine: ${engine}${channel ? ` (channel: ${channel})` : ' (bundled chromium)'}`)
+    log('INFO', `  Cookies: ${cookieCount}`)
     log('INFO', `  Fingerprint: ${fingerprint ? 'Yes' : 'No'}`)
+    log('INFO', `  Fingerprint injector: ${useInjector ? 'Yes' : 'No (real browser)'}`)
     log('INFO', `  User-Agent: ${userAgent || 'Default'}`)
     log('INFO', `  Proxy: ${proxy ? 'Yes' : 'No'}`)
+    log('INFO', `  Updated: ${session.updatedAt ? new Date(session.updatedAt).toISOString() : 'unknown'}`)
     log('INFO', 'Launching browser...')
 
+    const sandboxArgs = process.platform === 'win32' ? [] : ['--no-sandbox', '--disable-setuid-sandbox']
+    const certArgs = proxy
+        ? ['--ignore-certificate-errors', '--ignore-certificate-errors-spki-list', '--ignore-ssl-errors']
+        : []
+
     const browser = await chromium.launch({
+        ...(channel ? { channel } : {}),
         headless: false,
         ...(proxy ? { proxy } : {}),
-        args: [
-            '--no-sandbox',
-            '--mute-audio',
-            '--disable-setuid-sandbox',
-            '--ignore-certificate-errors',
-            '--ignore-certificate-errors-spki-list',
-            '--ignore-ssl-errors',
-            '--no-first-run',
-            '--no-default-browser-check',
-            '--disable-user-media-security=true',
-            '--disable-blink-features=Attestation',
-            '--disable-features=WebAuthentication,PasswordManagerOnboarding,PasswordManager,EnablePasswordsAccountStorage,Passkeys',
-            '--disable-save-password-bubble'
-        ]
+        args: [...BROWSER_ARGS, ...sandboxArgs, ...certArgs]
     })
 
     let context
-    if (fingerprint) {
-        context = await newInjectedContext(browser, { fingerprint })
-
-        await context.addInitScript(() => {
-            Object.defineProperty(navigator, 'credentials', {
-                value: {
-                    create: () => Promise.reject(new Error('WebAuthn disabled')),
-                    get: () => Promise.reject(new Error('WebAuthn disabled'))
-                }
-            })
+    if (useInjector && fingerprint) {
+        context = await newInjectedContext(browser, {
+            fingerprint,
+            newContextOptions: {
+                permissions: [],
+                ignoreHTTPSErrors: Boolean(proxy),
+                ...(storageState ? { storageState } : {}),
+                ...(isMobile && screen
+                    ? {
+                          isMobile: true,
+                          hasTouch: true,
+                          deviceScaleFactor: screen.devicePixelRatio,
+                          viewport: { width: screen.width, height: screen.height },
+                          screen: { width: screen.width, height: screen.height }
+                      }
+                    : {})
+            }
         })
-
         log('SUCCESS', 'Fingerprint injected into browser context')
     } else {
         context = await browser.newContext({
-            viewport: isMobile ? { width: 375, height: 667 } : { width: 1366, height: 768 }
+            permissions: [],
+            ignoreHTTPSErrors: Boolean(proxy),
+            ...(storageState ? { storageState } : {}),
+            ...(isMobile
+                ? {
+                      isMobile: true,
+                      hasTouch: true,
+                      ...(userAgent ? { userAgent } : {}),
+                      ...(screen
+                          ? {
+                                deviceScaleFactor: screen.devicePixelRatio,
+                                viewport: { width: screen.width, height: screen.height },
+                                screen: { width: screen.width, height: screen.height }
+                            }
+                          : { viewport: { width: 375, height: 667 } })
+                  }
+                : {})
         })
     }
 
-    if (cookies.length) {
-        await context.addCookies(cookies)
-        log('INFO', `Added ${cookies.length} cookies to context`)
-    }
+    await context.addInitScript(() => {
+        try {
+            Object.defineProperty(navigator, 'webdriver', { configurable: true, get: () => false })
+        } catch {}
+
+        const rejectWebAuthn = () => Promise.reject(new DOMException('WebAuthn disabled', 'NotAllowedError'))
+        try {
+            Object.defineProperty(navigator, 'credentials', {
+                configurable: true,
+                get: () => ({
+                    create: rejectWebAuthn,
+                    get: rejectWebAuthn,
+                    preventSilentAccess: () => Promise.resolve()
+                })
+            })
+        } catch {}
+        try {
+            if (window.PublicKeyCredential) {
+                window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable = () => Promise.resolve(false)
+            }
+        } catch {}
+
+        delete window.RTCPeerConnection
+        delete window.webkitRTCPeerConnection
+        delete window.RTCDataChannel
+    })
 
     const page = await context.newPage()
-    await page.goto(config.baseURL, { waitUntil: 'domcontentloaded' })
+    await page.goto(REWARDS_URL, { waitUntil: 'domcontentloaded' })
 
     log('SUCCESS', 'Browser opened with session loaded')
-    log('INFO', `Navigated to: ${config.baseURL}`)
+    log('INFO', `Navigated to: ${REWARDS_URL}`)
+    log('INFO', 'Press Ctrl+C to close.')
 
     setupCleanupHandlers(async () => {
         if (browser?.isConnected?.()) {
@@ -165,4 +208,7 @@ async function main() {
     })
 }
 
-main()
+main().catch(error => {
+    log('ERROR', 'browserSession failed:', error?.message ?? error)
+    process.exit(1)
+})

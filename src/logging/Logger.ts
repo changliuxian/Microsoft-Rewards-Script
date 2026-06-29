@@ -143,7 +143,6 @@ export class Logger {
             return true
         }
 
-
         const { mode, levels, keywords, regexPatterns } = filter
 
         const hasLevelRule = Array.isArray(levels) && levels.length > 0

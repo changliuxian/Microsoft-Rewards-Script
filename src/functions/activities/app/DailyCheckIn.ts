@@ -1,4 +1,5 @@
-import type { AxiosRequestConfig } from 'axios'
+import { URLs } from '../../../constants/urls'
+import type { HttpRequestConfig } from '../../../util/Http'
 import { randomUUID } from 'crypto'
 import { Workers } from '../../Workers'
 
@@ -26,55 +27,15 @@ export class DailyCheckIn extends Workers {
         )
 
         try {
-            // Try type 101 first
-            this.bot.logger.debug(this.bot.isMobile, 'DAILY-CHECK-IN', 'Attempting Daily Check-In | type=101')
-
-            let response = await this.submitDaily(101) // Try using 101 (EU Variant?)
-            this.bot.logger.debug(
-                this.bot.isMobile,
-                'DAILY-CHECK-IN',
-                `Received Daily Check-In response | type=101 | status=${response?.status ?? 'unknown'}`
-            )
-
-            let newBalance = Number(response?.data?.response?.balance ?? this.oldBalance)
-            this.gainedPoints = newBalance - this.oldBalance
+            const response = await this.submitDaily()
 
             this.bot.logger.debug(
                 this.bot.isMobile,
                 'DAILY-CHECK-IN',
-                `Balance delta after Daily Check-In | type=101 | oldBalance=${this.oldBalance} | newBalance=${newBalance} | gainedPoints=${this.gainedPoints}`
+                `Received Daily Check-In response | status=${response?.status ?? 'unknown'}`
             )
 
-            if (this.gainedPoints > 0) {
-                this.bot.userData.currentPoints = newBalance
-                this.bot.userData.gainedPoints = (this.bot.userData.gainedPoints ?? 0) + this.gainedPoints
-
-                this.bot.logger.info(
-                    this.bot.isMobile,
-                    'DAILY-CHECK-IN',
-                    `Completed Daily Check-In | type=101 | gainedPoints=${this.gainedPoints} | oldBalance=${this.oldBalance} | newBalance=${newBalance}`,
-                    'green'
-                )
-                return
-            }
-
-            this.bot.logger.debug(
-                this.bot.isMobile,
-                'DAILY-CHECK-IN',
-                `No points gained with type=101 | oldBalance=${this.oldBalance} | newBalance=${newBalance} | retryingWithType=103`
-            )
-
-            // Fallback to type 103
-            this.bot.logger.debug(this.bot.isMobile, 'DAILY-CHECK-IN', 'Attempting Daily Check-In | type=103')
-
-            response = await this.submitDaily(103) // Try using 103 (USA Variant?)
-            this.bot.logger.debug(
-                this.bot.isMobile,
-                'DAILY-CHECK-IN',
-                `Received Daily Check-In response | type=103 | status=${response?.status ?? 'unknown'}`
-            )
-
-            newBalance = Number(response?.data?.response?.balance ?? this.oldBalance)
+            const newBalance = Number(response?.data?.response?.balance ?? this.oldBalance)
             this.gainedPoints = newBalance - this.oldBalance
 
             this.bot.logger.debug(
@@ -97,7 +58,7 @@ export class DailyCheckIn extends Workers {
                 this.bot.logger.warn(
                     this.bot.isMobile,
                     'DAILY-CHECK-IN',
-                    `Daily Check-In completed but no points gained | typesTried=101,103 | oldBalance=${this.oldBalance} | finalBalance=${newBalance}`
+                    `Daily Check-In completed but no points gained | type=103 | oldBalance=${this.oldBalance} | finalBalance=${newBalance}`
                 )
             }
         } catch (error) {
@@ -109,35 +70,39 @@ export class DailyCheckIn extends Workers {
         }
     }
 
-    private async submitDaily(type: number) {
+    private async submitDaily() {
         try {
             const jsonData = {
+                risk_context: {},
+                type: 103,
+                channel: 'SAIOS',
+                attributes: {},
                 id: randomUUID(),
                 amount: 1,
-                type: type,
-                attributes: {
-                    offerid: 'Gamification_Sapphire_DailyCheckIn'
-                },
                 country: this.bot.userData.geoLocale
             }
 
             this.bot.logger.debug(
                 this.bot.isMobile,
                 'DAILY-CHECK-IN',
-                `Preparing Daily Check-In payload | type=${type} | id=${jsonData.id} | amount=${jsonData.amount} | country=${jsonData.country}`
+                `Preparing Daily Check-In payload | type=${jsonData.type} | id=${jsonData.id} | amount=${jsonData.amount} | country=${jsonData.country}`
             )
 
-            const request: AxiosRequestConfig = {
-                url: 'https://prod.rewardsplatform.microsoft.com/dapi/me/activities',
+            const request: HttpRequestConfig = {
+                url: URLs.platform.activities,
                 method: 'POST',
                 headers: {
                     Authorization: `Bearer ${this.bot.accessToken}`,
-                    'User-Agent':
-                        'Bing/32.5.431027001 (com.microsoft.bing; build:431027001; iOS 17.6.1) Alamofire/5.10.2',
                     'Content-Type': 'application/json',
+                    Accept: '*/*',
+                    'User-Agent':
+                        'Mozilla/5.0 (iPad; CPU iPad OS 26_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.5 Mobile/15E148 Safari/605.1.15 BingSapphire/33.4.440603001',
+                    'X-Rewards-AppId': 'SAIOS/33.4.440603001',
+                    'X-Rewards-PartnerId': 'startapp',
                     'X-Rewards-Country': this.bot.userData.geoLocale,
                     'X-Rewards-Language': 'en',
-                    'X-Rewards-ismobile': 'true'
+                    'X-Rewards-Flights': 'rwgobig',
+                    'X-Rewards-IsMobile': 'true'
                 },
                 data: JSON.stringify(jsonData)
             }
@@ -145,15 +110,15 @@ export class DailyCheckIn extends Workers {
             this.bot.logger.debug(
                 this.bot.isMobile,
                 'DAILY-CHECK-IN',
-                `Sending Daily Check-In request | type=${type} | url=${request.url}`
+                `Sending Daily Check-In request | type=${jsonData.type} | url=${request.url}`
             )
 
-            return this.bot.axios.request(request)
+            return this.bot.http.request<{ response?: { balance?: number } }>(request)
         } catch (error) {
             this.bot.logger.error(
                 this.bot.isMobile,
                 'DAILY-CHECK-IN',
-                `Error in submitDaily | type=${type} | message=${error instanceof Error ? error.message : String(error)}`
+                `Error in submitDaily | message=${error instanceof Error ? error.message : String(error)}`
             )
             throw error
         }

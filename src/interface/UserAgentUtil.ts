@@ -1,4 +1,3 @@
-// Chrome Product Data
 export interface ChromeVersion {
     timestamp: Date
     channels: Channels
@@ -17,7 +16,6 @@ export interface Beta {
     revision: string
 }
 
-// Edge Product Data
 export interface EdgeVersion {
     Product: string
     Releases: Release[]

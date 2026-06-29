@@ -1,27 +1,37 @@
 export interface Config {
-    baseURL: string
     sessionPath: string
     headless: boolean
     clusters: number
     errorDiagnostics: boolean
     ensureStreakProtection: boolean
+    autoClaimPunchcardRewards: boolean
+    skipNonPointTasks: boolean
     workers: ConfigWorkers
+    activities: ConfigActivities
     searchOnBingLocalQueries: boolean
     globalTimeout: number | string
     searchSettings: ConfigSearchSettings
+    experimental: ConfigExperimental
     debugLogs: boolean
     proxy: ConfigProxy
     consoleLogFilter: LogFilter
     webhook: ConfigWebhook
 }
 
-export type QueryEngine = 'google' | 'wikipedia' | 'reddit' | 'local' | 'customCN'
+export type QueryEngine = 'google' | 'wikipedia' | 'wikirandom' | 'hackernews' | 'reddit' | 'local'
+
+// RSS feeds are selected with a dotted path: 'rss' (every catalogued feed),
+// 'rss.<site>' (every feed for that site), or 'rss.<site>.<endpoint>' (one feed).
+export type RssFeedSelector = 'rss' | `rss.${string}`
+export type QueryEngineEntry = QueryEngine | RssFeedSelector
 
 export interface ConfigSearchSettings {
     scrollRandomResults: boolean
     clickRandomResults: boolean
+    runOnZeroPoints: boolean
+    maxBonusSearches: number
     parallelSearching: boolean
-    queryEngines: QueryEngine[]
+    queryEngines: QueryEngineEntry[]
     searchResultVisitTime: number | string
     searchDelay: ConfigDelay
     readDelay: ConfigDelay
@@ -32,21 +42,32 @@ export interface ConfigDelay {
     max: number | string
 }
 
+export interface ConfigExperimental {
+    apiSearch: boolean
+    apiSearchOnBing: boolean
+}
+
 export interface ConfigProxy {
     queryEngine: boolean
 }
 
 export interface ConfigWorkers {
     doDailySet: boolean
-    doSpecialPromotions: boolean
     doMorePromotions: boolean
     doClaimBonusPoints: boolean
     doPunchCards: boolean
     doAppPromotions: boolean
     doDesktopSearch: boolean
     doMobileSearch: boolean
+    doBonusSearches: boolean
     doDailyCheckIn: boolean
     doReadToEarn: boolean
+    doActivateSearchPerk: boolean
+}
+
+export interface ConfigActivities {
+    urlReward: boolean
+    searchOnBing: boolean
 }
 
 // Webhooks

@@ -5,119 +5,44 @@ set -euo pipefail
 export PLAYWRIGHT_BROWSERS_PATH=0
 
 SCRIPT_DIR="/usr/src/microsoft-rewards-script"
-DIST_DIR="$SCRIPT_DIR/dist"
 
-# ─────────────────────────────────────────────────────────────────────────────
 # 1. Timezone: default to UTC if not provided
-# ─────────────────────────────────────────────────────────────────────────────
 : "${TZ:=UTC}"
 ln -snf "/usr/share/zoneinfo/$TZ" /etc/localtime
 echo "$TZ" > /etc/timezone
 dpkg-reconfigure -f noninteractive tzdata
 
-# ─────────────────────────────────────────────────────────────────────────────
 # 2. Validate CRON_SCHEDULE
-# ─────────────────────────────────────────────────────────────────────────────
 if [ -z "${CRON_SCHEDULE:-}" ]; then
   echo "ERROR: CRON_SCHEDULE environment variable is not set." >&2
   echo "Please set CRON_SCHEDULE (e.g., \"0 2 * * *\")." >&2
   exit 1
 fi
 
-# ─────────────────────────────────────────────────────────────────────────────
-# 3. Accounts: generate accounts.json from ACCOUNT_N_* env vars
+# 3. Accounts: read directly from ACCOUNT_N_* env vars by the app at runtime.
 #
 #    Add one numbered block per account in .env, starting at 1:
 #      ACCOUNT_1_EMAIL, ACCOUNT_1_PASSWORD, ...
 #      ACCOUNT_2_EMAIL, ACCOUNT_2_PASSWORD, ...
 #
-#    All fields match accounts.example.json exactly.
-#    The loop stops at the first missing ACCOUNT_N_EMAIL.
-# ─────────────────────────────────────────────────────────────────────────────
-CONFIG_DIR="$DIST_DIR/config"
-mkdir -p "$CONFIG_DIR"
-
-ACCOUNTS_FILE="$CONFIG_DIR/accounts.json"
-
-_build_account_json() {
-  local email="$1"
-  local password="$2"
-  local totp="${3:-}"
-  local recovery="${4:-}"
-  local geo="${5:-auto}"
-  local lang="${6:-en}"
-  local proxy_axios="${7:-false}"
-  local proxy_url="${8:-}"
-  local proxy_port="${9:-0}"
-  local proxy_user="${10:-}"
-  local proxy_pass="${11:-}"
-
-  jq -n \
-    --arg email "$email" \
-    --arg password "$password" \
-    --arg totp "$totp" \
-    --arg recovery "$recovery" \
-    --arg geo "$geo" \
-    --arg lang "$lang" \
-    --argjson proxyAxios "$proxy_axios" \
-    --arg proxyUrl "$proxy_url" \
-    --argjson proxyPort "$proxy_port" \
-    --arg proxyUser "$proxy_user" \
-    --arg proxyPass "$proxy_pass" \
-    '{
-      email: $email,
-      password: $password,
-      totpSecret: $totp,
-      recoveryEmail: $recovery,
-      geoLocale: $geo,
-      langCode: $lang,
-      proxy: {
-        proxyAxios: $proxyAxios,
-        url: $proxyUrl,
-        port: $proxyPort,
-        username: $proxyUser,
-        password: $proxyPass
-      },
-      saveFingerprint: {
-        mobile: false,
-        desktop: false
-      }
-    }'
-}
-
-account_array="[]"
-i=1
-while true; do
-  email_var="ACCOUNT_${i}_EMAIL"
-  pass_var="ACCOUNT_${i}_PASSWORD"
-  email="${!email_var:-}"
-  [ -z "$email" ] && break
-  pass="${!pass_var:?ERROR: ${pass_var} must be set when ${email_var} is set}"
-
-  totp_var="ACCOUNT_${i}_TOTP_SECRET";      totp="${!totp_var:-}"
-  rec_var="ACCOUNT_${i}_RECOVERY_EMAIL";    rec="${!rec_var:-}"
-  geo_var="ACCOUNT_${i}_GEO_LOCALE";        geo="${!geo_var:-auto}"
-  lang_var="ACCOUNT_${i}_LANG_CODE";        lang="${!lang_var:-en}"
-  paxios_var="ACCOUNT_${i}_PROXY_AXIOS";    paxios="${!paxios_var:-false}"
-  purl_var="ACCOUNT_${i}_PROXY_URL";        purl="${!purl_var:-}"
-  pport_var="ACCOUNT_${i}_PROXY_PORT";      pport="${!pport_var:-0}"
-  puser_var="ACCOUNT_${i}_PROXY_USERNAME";  puser="${!puser_var:-}"
-  ppass_var="ACCOUNT_${i}_PROXY_PASSWORD";  ppass="${!ppass_var:-}"
-
-  account_json=$(_build_account_json "$email" "$pass" "$totp" "$rec" "$geo" "$lang" "$paxios" "$purl" "$pport" "$puser" "$ppass")
-  account_array=$(echo "$account_array" | jq ". + [$account_json]")
-  i=$((i + 1))
-done
-
-if [ "$(echo "$account_array" | jq 'length')" -gt 0 ]; then
-  echo "$account_array" > "$ACCOUNTS_FILE"
-  echo "[entrypoint] accounts.json written with $(echo "$account_array" | jq 'length') account(s)"
-else
-  echo "WARNING: No ACCOUNT_1_EMAIL found. accounts.json not written — script will likely fail." >&2
+#    No accounts.json is generated anymore - loadAccounts() parses the
+#    environment. This is just a fail-fast presence check.
+if [ -z "${ACCOUNT_1_EMAIL:-}" ]; then
+  echo "WARNING: No ACCOUNT_1_EMAIL found in environment - the script will fail." >&2
   echo "         Set ACCOUNT_1_EMAIL and ACCOUNT_1_PASSWORD in your .env file." >&2
+else
+  # Count configured accounts for the startup log (stops at first gap)
+  acct_count=0
+  i=1
+  while true; do
+    email_var="ACCOUNT_${i}_EMAIL"
+    [ -z "${!email_var:-}" ] && break
+    acct_count=$((acct_count + 1))
+    i=$((i + 1))
+  done
+  echo "[entrypoint] Found $acct_count account(s) in environment"
 fi
 
-# ─────────────────────────────────────────────────────────────────────────────
 # 4. Config: generate and patch config.json
 #
 #    Behaviour:
@@ -127,7 +52,7 @@ fi
 #      - Schema drift         → warn with list of missing keys in both cases;
 #                               never auto-modify the file
 #
-#    headless is always forced true — it is not optional in Docker.
+#    headless is always forced true - it is not optional in Docker.
 #
 #    CONFIG_* env var overrides (applied on every startup):
 #
@@ -149,6 +74,7 @@ fi
 #      CONFIG_WORKER_MOBILE_SEARCH       → .workers.doMobileSearch
 #      CONFIG_WORKER_DAILY_CHECKIN       → .workers.doDailyCheckIn
 #      CONFIG_WORKER_READ_TO_EARN        → .workers.doReadToEarn
+#      CONFIG_WORKER_ACTIVATE_SEARCH_PERK → .workers.doActivateSearchPerk
 #
 #    Search settings:
 #      CONFIG_SEARCH_SCROLL_RANDOM       → .searchSettings.scrollRandomResults
@@ -159,7 +85,18 @@ fi
 #      CONFIG_SEARCH_READ_DELAY_MIN      → .searchSettings.readDelay.min
 #      CONFIG_SEARCH_READ_DELAY_MAX      → .searchSettings.readDelay.max
 #      CONFIG_SEARCH_VISIT_TIME          → .searchSettings.searchResultVisitTime
+#      CONFIG_SEARCH_RUN_ON_ZERO_POINTS  → .searchSettings.runOnZeroPoints
+#      CONFIG_SEARCH_MAX_BONUS_SEARCHES  → .searchSettings.maxBonusSearches
+#      CONFIG_SEARCH_QUERY_ENGINES       → .searchSettings.queryEngines (comma-separated)
 #      CONFIG_SEARCH_ON_BING_LOCAL       → .searchOnBingLocalQueries
+#
+#    Activities:
+#      CONFIG_ACTIVITY_URL_REWARD        → .activities.urlReward
+#      CONFIG_ACTIVITY_SEARCH_ON_BING    → .activities.searchOnBing
+#
+#    Experimental:
+#      CONFIG_EXPERIMENTAL_API_SEARCH         → .experimental.apiSearch
+#      CONFIG_EXPERIMENTAL_API_SEARCH_ON_BING → .experimental.apiSearchOnBing
 #
 #    Proxy:
 #      CONFIG_PROXY_QUERY_ENGINE         → .proxy.queryEngine
@@ -182,9 +119,8 @@ fi
 #      CONFIG_WEBHOOK_LOG_FILTER_LEVELS   → comma-separated
 #      CONFIG_WEBHOOK_LOG_FILTER_KEYWORDS → comma-separated
 #
-# ─────────────────────────────────────────────────────────────────────────────
-CONFIG_FILE="$CONFIG_DIR/config.json"
-CONFIG_EXAMPLE="$SCRIPT_DIR/src/config.example.json"
+CONFIG_FILE="$SCRIPT_DIR/config/config.json"
+CONFIG_EXAMPLE="$SCRIPT_DIR/config.example.json"
 
 # Returns 0 if config.json exists and is a valid JSON object
 _config_file_is_valid() {
@@ -203,7 +139,17 @@ _find_new_keys() {
 }
 
 if ! [ -f "$CONFIG_EXAMPLE" ]; then
-  echo "ERROR: config.example.json not found at $CONFIG_EXAMPLE — image may be corrupt." >&2
+  echo "ERROR: config.example.json not found at $CONFIG_EXAMPLE - image may be corrupt." >&2
+  exit 1
+fi
+
+# A single-file bind mount whose host path did not exist makes Docker create a
+# *directory* at config.json. Fail clearly instead of writing a broken config.
+if [ -d "$CONFIG_FILE" ]; then
+  echo "ERROR: $CONFIG_FILE is a directory, not a file." >&2
+  echo "       ./config.json likely did not exist on the host when the container" >&2
+  echo "       started, so Docker created it as a folder. Remove it and create the" >&2
+  echo "       file first:  cp config.example.json config.json" >&2
   exit 1
 fi
 
@@ -224,14 +170,14 @@ if _config_file_is_valid; then
       printf "│    %-55s│\n" "+ $key" >&2
     done
     echo "│                                                         │" >&2
-    echo "│  To fix: delete ./config/config.json and restart —      │" >&2
+    echo "│  To fix: delete config.json (or empty it) and restart - │" >&2
     echo "│  it will be regenerated with all current defaults,      │" >&2
     echo "│  then re-apply your CONFIG_* env vars.                  │" >&2
     echo "└─────────────────────────────────────────────────────────┘" >&2
     echo "" >&2
   fi
 else
-  echo "[entrypoint] No config.json found — generating from config.example.json."
+  echo "[entrypoint] No config.json found - generating from config.example.json."
   cp "$CONFIG_EXAMPLE" "$CONFIG_FILE"
   echo "[entrypoint] config.json created. Customise via CONFIG_* env vars in compose.yaml."
 fi
@@ -253,46 +199,6 @@ _cfg() {
   echo "[entrypoint]   $path = $val"
 }
 
-# headless is always forced true — cannot run headed inside Docker
-_cfg 'true'                            '.headless'                                  bool
-
-# Top-level
-_cfg "${CONFIG_CLUSTERS:-}"            '.clusters'                                  number
-_cfg "${CONFIG_DEBUG_LOGS:-}"          '.debugLogs'                                 bool
-_cfg "${CONFIG_ERROR_DIAGNOSTICS:-}"   '.errorDiagnostics'                          bool
-_cfg "${CONFIG_ENSURE_STREAK_PROTECTION:-}"   '.ensureStreakProtection'                          bool
-_cfg "${CONFIG_GLOBAL_TIMEOUT:-}"      '.globalTimeout'                             string
-
-# Workers
-_cfg "${CONFIG_WORKER_DAILY_SET:-}"           '.workers.doDailySet'           bool
-_cfg "${CONFIG_WORKER_CLAIM_BONUS_POINTS:-}"  '.workers.doClaimBonusPoints'           bool
-_cfg "${CONFIG_WORKER_SPECIAL_PROMOTIONS:-}"  '.workers.doSpecialPromotions'   bool
-_cfg "${CONFIG_WORKER_MORE_PROMOTIONS:-}"     '.workers.doMorePromotions'      bool
-_cfg "${CONFIG_WORKER_PUNCH_CARDS:-}"         '.workers.doPunchCards'          bool
-_cfg "${CONFIG_WORKER_APP_PROMOTIONS:-}"      '.workers.doAppPromotions'       bool
-_cfg "${CONFIG_WORKER_DESKTOP_SEARCH:-}"      '.workers.doDesktopSearch'       bool
-_cfg "${CONFIG_WORKER_MOBILE_SEARCH:-}"       '.workers.doMobileSearch'        bool
-_cfg "${CONFIG_WORKER_DAILY_CHECKIN:-}"       '.workers.doDailyCheckIn'        bool
-_cfg "${CONFIG_WORKER_READ_TO_EARN:-}"        '.workers.doReadToEarn'          bool
-
-# Search settings
-_cfg "${CONFIG_SEARCH_SCROLL_RANDOM:-}"    '.searchSettings.scrollRandomResults'    bool
-_cfg "${CONFIG_SEARCH_CLICK_RANDOM:-}"     '.searchSettings.clickRandomResults'     bool
-_cfg "${CONFIG_SEARCH_PARALLEL:-}"         '.searchSettings.parallelSearching'      bool
-_cfg "${CONFIG_SEARCH_DELAY_MIN:-}"        '.searchSettings.searchDelay.min'        string
-_cfg "${CONFIG_SEARCH_DELAY_MAX:-}"        '.searchSettings.searchDelay.max'        string
-_cfg "${CONFIG_SEARCH_READ_DELAY_MIN:-}"   '.searchSettings.readDelay.min'          string
-_cfg "${CONFIG_SEARCH_READ_DELAY_MAX:-}"   '.searchSettings.readDelay.max'          string
-_cfg "${CONFIG_SEARCH_VISIT_TIME:-}"       '.searchSettings.searchResultVisitTime'  string
-_cfg "${CONFIG_SEARCH_ON_BING_LOCAL:-}"    '.searchOnBingLocalQueries'              bool
-
-# Proxy
-_cfg "${CONFIG_PROXY_QUERY_ENGINE:-}"  '.proxy.queryEngine'  bool
-
-# Console log filter
-# Levels and keywords accept comma-separated values e.g. "error,warn"
-_cfg "${CONFIG_LOG_FILTER_ENABLED:-}"   '.consoleLogFilter.enabled'  bool
-_cfg "${CONFIG_LOG_FILTER_MODE:-}"      '.consoleLogFilter.mode'     string
 _cfg_array() {
   # _cfg_array <value-or-unset-sentinel> <jq_path>
   # Uses __UNSET__ sentinel to distinguish "var not set" from "var set to empty".
@@ -308,6 +214,62 @@ _cfg_array() {
   jq --argjson v "$json_array" "$path = \$v" "$CONFIG_FILE" > "$CONFIG_FILE.tmp" && mv "$CONFIG_FILE.tmp" "$CONFIG_FILE"
   echo "[entrypoint]   $path = [$val]"
 }
+
+# headless is always forced true - cannot run headed inside Docker
+_cfg 'true'                            '.headless'                                  bool
+
+# Top-level
+_cfg "${CONFIG_CLUSTERS:-}"            '.clusters'                                  number
+_cfg "${CONFIG_DEBUG_LOGS:-}"          '.debugLogs'                                 bool
+_cfg "${CONFIG_ERROR_DIAGNOSTICS:-}"   '.errorDiagnostics'                          bool
+_cfg "${CONFIG_ENSURE_STREAK_PROTECTION:-}"   '.ensureStreakProtection'                          bool
+_cfg "${CONFIG_AUTO_CLAIM_PUNCHCARD_REWARDS:-}"  '.autoClaimPunchcardRewards'  bool
+_cfg "${CONFIG_SKIP_NON_POINT_TASKS:-}"          '.skipNonPointTasks'          bool
+_cfg "${CONFIG_GLOBAL_TIMEOUT:-}"      '.globalTimeout'                             string
+
+# Workers
+_cfg "${CONFIG_WORKER_DAILY_SET:-}"           '.workers.doDailySet'           bool
+_cfg "${CONFIG_WORKER_CLAIM_BONUS_POINTS:-}"  '.workers.doClaimBonusPoints'           bool
+_cfg "${CONFIG_WORKER_SPECIAL_PROMOTIONS:-}"  '.workers.doSpecialPromotions'   bool
+_cfg "${CONFIG_WORKER_MORE_PROMOTIONS:-}"     '.workers.doMorePromotions'      bool
+_cfg "${CONFIG_WORKER_PUNCH_CARDS:-}"         '.workers.doPunchCards'          bool
+_cfg "${CONFIG_WORKER_APP_PROMOTIONS:-}"      '.workers.doAppPromotions'       bool
+_cfg "${CONFIG_WORKER_DESKTOP_SEARCH:-}"      '.workers.doDesktopSearch'       bool
+_cfg "${CONFIG_WORKER_MOBILE_SEARCH:-}"       '.workers.doMobileSearch'        bool
+_cfg "${CONFIG_WORKER_BONUS_SEARCHES:-}"         '.workers.doBonusSearches'        bool
+_cfg "${CONFIG_WORKER_DAILY_CHECKIN:-}"       '.workers.doDailyCheckIn'        bool
+_cfg "${CONFIG_WORKER_READ_TO_EARN:-}"        '.workers.doReadToEarn'          bool
+_cfg "${CONFIG_WORKER_ACTIVATE_SEARCH_PERK:-}" '.workers.doActivateSearchPerk'  bool
+
+# Search settings
+_cfg "${CONFIG_SEARCH_SCROLL_RANDOM:-}"    '.searchSettings.scrollRandomResults'    bool
+_cfg "${CONFIG_SEARCH_CLICK_RANDOM:-}"     '.searchSettings.clickRandomResults'     bool
+_cfg "${CONFIG_SEARCH_PARALLEL:-}"         '.searchSettings.parallelSearching'      bool
+_cfg "${CONFIG_SEARCH_DELAY_MIN:-}"        '.searchSettings.searchDelay.min'        string
+_cfg "${CONFIG_SEARCH_DELAY_MAX:-}"        '.searchSettings.searchDelay.max'        string
+_cfg "${CONFIG_SEARCH_READ_DELAY_MIN:-}"   '.searchSettings.readDelay.min'          string
+_cfg "${CONFIG_SEARCH_READ_DELAY_MAX:-}"   '.searchSettings.readDelay.max'          string
+_cfg "${CONFIG_SEARCH_VISIT_TIME:-}"       '.searchSettings.searchResultVisitTime'  string
+_cfg "${CONFIG_SEARCH_RUN_ON_ZERO_POINTS:-}" '.searchSettings.runOnZeroPoints'      bool
+_cfg "${CONFIG_SEARCH_MAX_BONUS_SEARCHES:-}" '.searchSettings.maxBonusSearches'     number
+_cfg_array "${CONFIG_SEARCH_QUERY_ENGINES-__UNSET__}" '.searchSettings.queryEngines'
+_cfg "${CONFIG_SEARCH_ON_BING_LOCAL:-}"    '.searchOnBingLocalQueries'              bool
+
+# Activities
+_cfg "${CONFIG_ACTIVITY_URL_REWARD:-}"     '.activities.urlReward'                  bool
+_cfg "${CONFIG_ACTIVITY_SEARCH_ON_BING:-}" '.activities.searchOnBing'               bool
+
+# Experimental
+_cfg "${CONFIG_EXPERIMENTAL_API_SEARCH:-}"         '.experimental.apiSearch'         bool
+_cfg "${CONFIG_EXPERIMENTAL_API_SEARCH_ON_BING:-}" '.experimental.apiSearchOnBing'   bool
+
+# Proxy
+_cfg "${CONFIG_PROXY_QUERY_ENGINE:-}"  '.proxy.queryEngine'  bool
+
+# Console log filter
+# Levels and keywords accept comma-separated values e.g. "error,warn"
+_cfg "${CONFIG_LOG_FILTER_ENABLED:-}"   '.consoleLogFilter.enabled'  bool
+_cfg "${CONFIG_LOG_FILTER_MODE:-}"      '.consoleLogFilter.mode'     string
 _cfg_array "${CONFIG_LOG_FILTER_LEVELS-__UNSET__}"    '.consoleLogFilter.levels'
 _cfg_array "${CONFIG_LOG_FILTER_KEYWORDS-__UNSET__}"  '.consoleLogFilter.keywords'
 
@@ -332,6 +294,13 @@ _cfg_array "${CONFIG_WEBHOOK_LOG_FILTER_KEYWORDS-__UNSET__}"  '.webhook.webhookL
 
 echo "[entrypoint] Config ready."
 
+# Link the generated config back to the root so the app script can find it
+ln -sf "$CONFIG_FILE" "$SCRIPT_DIR/config.json"
+
+# Snapshot the full container environment for cron-spawned runs
+export -p > /etc/container_env
+chmod 600 /etc/container_env
+
 # ─────────────────────────────────────────────────────────────────────────────
 # 5. Initial run without sleep if RUN_ON_START=true
 # ─────────────────────────────────────────────────────────────────────────────
@@ -348,9 +317,7 @@ if [ "${RUN_ON_START:-false}" = "true" ]; then
   echo "[entrypoint] Background process started (PID: $!)"
 fi
 
-# ─────────────────────────────────────────────────────────────────────────────
 # 6. Template and register cron file
-# ─────────────────────────────────────────────────────────────────────────────
 if [ ! -f /etc/cron.d/microsoft-rewards-cron.template ]; then
   echo "ERROR: Cron template /etc/cron.d/microsoft-rewards-cron.template not found." >&2
   exit 1
@@ -363,7 +330,5 @@ crontab /etc/cron.d/microsoft-rewards-cron
 
 echo "[entrypoint] Cron configured with schedule: $CRON_SCHEDULE and timezone: $TZ; starting cron at $(date)"
 
-# ─────────────────────────────────────────────────────────────────────────────
 # 7. Start cron in foreground (PID 1)
-# ─────────────────────────────────────────────────────────────────────────────
 exec cron -f

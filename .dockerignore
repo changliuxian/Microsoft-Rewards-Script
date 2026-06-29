@@ -10,4 +10,5 @@ diagnostics/
 note
 accounts.dev.json
 accounts.main.json
+config.json
 .playwright-chromium-installed

@@ -164,7 +164,7 @@ export enum S {
 export interface Profile {
     ruid: string
     attributes: ProfileAttributes
-    offline_attributes: OfflineAttributes
+    offline_attributes: null
 }
 
 export interface ProfileAttributes {
@@ -205,8 +205,6 @@ export interface ProfileAttributes {
     iris_segmentation: string
     iris_segmentation_upd: Date
 }
-
-export interface OfflineAttributes {}
 
 export interface Promotion {
     name: string

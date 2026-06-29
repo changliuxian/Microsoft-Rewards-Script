@@ -10,7 +10,7 @@ export interface Account {
 }
 
 export interface AccountProxy {
-    proxyAxios: boolean
+    proxyHttp: boolean
     url: string
     port: number
     password: string

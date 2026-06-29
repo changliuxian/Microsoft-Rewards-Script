@@ -1,6 +1,7 @@
 import fs from 'fs'
 import path from 'path'
 import { fileURLToPath } from 'url'
+import { DatabaseSync } from 'node:sqlite'
 
 export function getDirname(importMetaUrl) {
     const __filename = fileURLToPath(importMetaUrl)
@@ -44,22 +45,9 @@ export function parseArgs(argv = process.argv.slice(2)) {
 }
 
 export function validateEmail(email) {
-    if (!email) {
-        log('ERROR', 'Missing -email argument')
+    if (!email || typeof email !== 'string' || !email.includes('@')) {
+        log('ERROR', `Invalid or missing -email argument: ${JSON.stringify(email)}`)
         log('ERROR', 'Usage: node script.js -email you@example.com')
-        process.exit(1)
-    }
-
-    if (typeof email !== 'string') {
-        log('ERROR', `Invalid email type: expected string, got ${typeof email}`)
-        log('ERROR', 'Usage: node script.js -email you@example.com')
-        process.exit(1)
-    }
-
-    if (!email.includes('@')) {
-        log('ERROR', `Invalid email format: "${email}"`)
-        log('ERROR', 'Email must contain "@" symbol')
-        log('ERROR', 'Example: you@example.com')
         process.exit(1)
     }
 
@@ -82,8 +70,7 @@ export function loadJsonFile(possiblePaths, required = true) {
     }
 
     if (required) {
-        log('ERROR', 'Required file not found')
-        log('ERROR', 'Searched in the following locations:')
+        log('ERROR', 'Required file not found. Searched in:')
         possiblePaths.forEach(p => log('ERROR', `  - ${p}`))
         process.exit(1)
     }
@@ -91,18 +78,18 @@ export function loadJsonFile(possiblePaths, required = true) {
     return null
 }
 
-export function loadConfig(projectRoot, isDev = false) {
-    const possiblePaths = isDev
-        ? [path.join(projectRoot, 'src', 'config.json')]
-        : [path.join(projectRoot, 'dist', 'config.json'), path.join(projectRoot, 'config.json')]
+export function loadConfig(projectRoot) {
+    const possiblePaths = [
+        path.resolve(process.cwd(), 'config.json'),
+        path.join(projectRoot, 'config.json'),
+        path.join(projectRoot, 'dist', 'config.json'),
+        path.join(projectRoot, 'src', 'config.json')
+    ]
 
     const result = loadJsonFile(possiblePaths, true)
 
     const missingFields = []
-    if (!result.data.baseURL) missingFields.push('baseURL')
     if (!result.data.sessionPath) missingFields.push('sessionPath')
-    if (result.data.headless === undefined) missingFields.push('headless')
-    if (!result.data.workers) missingFields.push('workers')
 
     if (missingFields.length > 0) {
         log('ERROR', 'Invalid config.json - missing required fields:')
@@ -114,16 +101,103 @@ export function loadConfig(projectRoot, isDev = false) {
     return result
 }
 
-export function loadAccounts(projectRoot, isDev = false) {
-    const possiblePaths = isDev
-        ? [path.join(projectRoot, 'src', 'accounts.dev.json')]
-        : [
-              path.join(projectRoot, 'dist', 'accounts.json'),
-              path.join(projectRoot, 'accounts.json'),
-              path.join(projectRoot, 'accounts.example.json')
-          ]
+export function loadEnvFile(projectRoot) {
+    const candidates = [
+        path.resolve(process.cwd(), '.env'),
+        path.join(projectRoot, '.env'),
+        path.join(projectRoot, 'dist', '.env'),
+        path.join(projectRoot, 'src', '.env')
+    ]
 
-    return loadJsonFile(possiblePaths, true)
+    const envFile = candidates.find(p => fs.existsSync(p))
+    if (!envFile) return
+
+    const raw = fs.readFileSync(envFile, 'utf8')
+    for (const line of raw.split(/\r?\n/)) {
+        const trimmed = line.trim()
+        if (!trimmed || trimmed.startsWith('#')) continue
+
+        const eq = trimmed.indexOf('=')
+        if (eq === -1) continue
+
+        const key = trimmed.slice(0, eq).trim()
+        let value = trimmed.slice(eq + 1).trim()
+
+        if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+            value = value.slice(1, -1)
+        }
+
+        if (process.env[key] === undefined) {
+            process.env[key] = value
+        }
+    }
+}
+
+function envStr(key) {
+    const v = process.env[key]
+    if (v === undefined) return undefined
+    const trimmed = v.trim()
+    return trimmed.length ? trimmed : undefined
+}
+
+function envBool(key, fallback) {
+    const v = envStr(key)
+    if (v === undefined) return fallback
+    return ['1', 'true', 'yes', 'on'].includes(v.toLowerCase())
+}
+
+const deprecationWarned = new Set()
+function envBoolWithLegacy(primary, legacy, fallback) {
+    if (envStr(primary) !== undefined) return envBool(primary, fallback)
+    if (envStr(legacy) !== undefined) {
+        if (!deprecationWarned.has(legacy)) {
+            deprecationWarned.add(legacy)
+            log('WARN', `${legacy} is deprecated; rename it to ${primary}.`)
+        }
+        return envBool(legacy, fallback)
+    }
+    return fallback
+}
+
+function envInt(key, fallback) {
+    const v = envStr(key)
+    if (v === undefined) return fallback
+    const n = parseInt(v, 10)
+    return Number.isFinite(n) ? n : fallback
+}
+
+export function loadAccountsFromEnv(projectRoot) {
+    loadEnvFile(projectRoot)
+
+    const accounts = []
+    for (let i = 1; ; i++) {
+        const idx = String(i)
+        const email = envStr(`ACCOUNT_${idx}_EMAIL`)
+
+        if (!email) break
+
+        accounts.push({
+            email,
+            password: envStr(`ACCOUNT_${idx}_PASSWORD`) ?? '',
+            totpSecret: envStr(`ACCOUNT_${idx}_TOTP_SECRET`),
+            recoveryEmail: envStr(`ACCOUNT_${idx}_RECOVERY_EMAIL`) ?? '',
+            geoLocale: envStr(`ACCOUNT_${idx}_GEO_LOCALE`) ?? 'auto',
+            langCode: envStr(`ACCOUNT_${idx}_LANG_CODE`) ?? 'en',
+            proxy: {
+                proxyHttp: envBoolWithLegacy(`ACCOUNT_${idx}_PROXY_HTTP`, `ACCOUNT_${idx}_PROXY_AXIOS`, false),
+                url: envStr(`ACCOUNT_${idx}_PROXY_URL`) ?? '',
+                port: envInt(`ACCOUNT_${idx}_PROXY_PORT`, 0),
+                username: envStr(`ACCOUNT_${idx}_PROXY_USERNAME`) ?? '',
+                password: envStr(`ACCOUNT_${idx}_PROXY_PASSWORD`) ?? ''
+            },
+            saveFingerprint: {
+                mobile: envBool(`ACCOUNT_${idx}_SAVE_FINGERPRINT_MOBILE`, false),
+                desktop: envBool(`ACCOUNT_${idx}_SAVE_FINGERPRINT_DESKTOP`, false)
+            }
+        })
+    }
+
+    return accounts
 }
 
 export function findAccountByEmail(accounts, email) {
@@ -134,55 +208,18 @@ export function findAccountByEmail(accounts, email) {
     )
 }
 
-export function getRuntimeBase(projectRoot, isDev = false) {
-    return path.join(projectRoot, isDev ? 'src' : 'dist')
-}
-
-export function getSessionPath(runtimeBase, sessionPath, email) {
-    return path.join(runtimeBase, 'browser', sessionPath, email)
-}
-
-export async function loadCookies(sessionBase, type = 'desktop') {
-    const cookiesFile = path.join(sessionBase, `session_${type}.json`)
-
-    if (!fs.existsSync(cookiesFile)) {
-        return []
-    }
-
-    try {
-        const content = await fs.promises.readFile(cookiesFile, 'utf8')
-        return JSON.parse(content)
-    } catch (error) {
-        log('WARN', `Failed to load cookies from: ${cookiesFile}`)
-        log('WARN', `Error: ${error.message}`)
-        return []
-    }
-}
-
-export async function loadFingerprint(sessionBase, type = 'desktop') {
-    const fpFile = path.join(sessionBase, `session_fingerprint_${type}.json`)
-
-    if (!fs.existsSync(fpFile)) {
-        return null
-    }
-
-    try {
-        const content = await fs.promises.readFile(fpFile, 'utf8')
-        return JSON.parse(content)
-    } catch (error) {
-        log('WARN', `Failed to load fingerprint from: ${fpFile}`)
-        log('WARN', `Error: ${error.message}`)
-        return null
-    }
-}
-
 export function getUserAgent(fingerprint) {
     if (!fingerprint) return null
-    return fingerprint?.fingerprint?.userAgent || fingerprint?.userAgent || null
+    return (
+        fingerprint?.fingerprint?.navigator?.userAgent ??
+        fingerprint?.fingerprint?.userAgent ??
+        fingerprint?.userAgent ??
+        null
+    )
 }
 
 export function buildProxyConfig(account) {
-    if (!account.proxy || !account.proxy.url || !account.proxy.port) {
+    if (!account?.proxy?.url || !account.proxy.port) {
         return null
     }
 
@@ -212,58 +249,54 @@ export function setupCleanupHandlers(cleanupFn) {
     process.on('SIGTERM', cleanup)
 }
 
-export function validateDeletionPath(targetPath, projectRoot) {
-    const normalizedTarget = path.normalize(targetPath)
-    const normalizedRoot = path.normalize(projectRoot)
+export function getSessionDbPath(projectRoot, sessionPath) {
+    const candidates = [
+        path.resolve(process.cwd(), sessionPath, 'sessions.db'),
+        path.join(projectRoot, sessionPath, 'sessions.db'),
+        path.join(projectRoot, 'dist', sessionPath, 'sessions.db'),
+        path.join(projectRoot, 'src', sessionPath, 'sessions.db')
+    ]
 
-    if (!normalizedTarget.startsWith(normalizedRoot)) {
-        return {
-            valid: false,
-            error: 'Path is outside project root'
-        }
-    }
-
-    if (normalizedTarget === normalizedRoot) {
-        return {
-            valid: false,
-            error: 'Cannot delete project root'
-        }
-    }
-
-    const pathSegments = normalizedTarget.split(path.sep)
-    if (pathSegments.length < 3) {
-        return {
-            valid: false,
-            error: 'Path is too shallow (safety check failed)'
-        }
-    }
-
-    return { valid: true, error: null }
+    const found = candidates.find(p => fs.existsSync(p))
+    return { dbPath: found ?? candidates[0], exists: Boolean(found), candidates }
 }
 
-export function safeRemoveDirectory(dirPath, projectRoot) {
-    const validation = validateDeletionPath(dirPath, projectRoot)
+export function openSessionDb(dbPath, { readonly = false } = {}) {
+    return new DatabaseSync(dbPath, { readOnly: readonly })
+}
 
-    if (!validation.valid) {
-        log('ERROR', 'Directory deletion failed - safety check:')
-        log('ERROR', `  Reason: ${validation.error}`)
-        log('ERROR', `  Target: ${dirPath}`)
-        log('ERROR', `  Project root: ${projectRoot}`)
-        return false
-    }
+export function closeSessionDb(db) {
+    try {
+        db.close()
+    } catch {}
+}
 
-    if (!fs.existsSync(dirPath)) {
-        log('INFO', `Directory does not exist: ${dirPath}`)
-        return true
+export function loadSessionRow(db, email, platform) {
+    const row = db
+        .prepare('SELECT storage_state, fingerprint, updated_at FROM sessions WHERE email = ? AND platform = ?')
+        .get(email, platform)
+
+    if (!row) return null
+
+    return {
+        storageState: row.storage_state ? JSON.parse(row.storage_state) : null,
+        fingerprint: row.fingerprint ? JSON.parse(row.fingerprint) : null,
+        updatedAt: row.updated_at
     }
+}
+
+export function listSessionRows(db) {
+    return db.prepare('SELECT email, platform, updated_at FROM sessions ORDER BY email, platform').all()
+}
+
+export function clearSessionRows(db, email) {
+    const info = email
+        ? db.prepare('DELETE FROM sessions WHERE LOWER(email) = LOWER(?)').run(email)
+        : db.prepare('DELETE FROM sessions').run()
 
     try {
-        fs.rmSync(dirPath, { recursive: true, force: true })
-        log('SUCCESS', `Directory removed: ${dirPath}`)
-        return true
-    } catch (error) {
-        log('ERROR', `Failed to remove directory: ${dirPath}`)
-        log('ERROR', `Error: ${error.message}`)
-        return false
-    }
+        db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+    } catch {}
+
+    return Number(info.changes ?? 0)
 }

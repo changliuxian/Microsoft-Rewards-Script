@@ -1,6 +1,7 @@
+import { URLs, REWARDS_BASE_URL } from '../../constants/urls'
 import type { Page } from 'patchright'
 import type { MicrosoftRewardsBot } from '../../index'
-import { saveSessionData } from '../../util/Load'
+import { saveStorageState } from '../../util/SessionStore'
 
 import { MobileAccessLogin } from './methods/MobileAccessLogin'
 import { EmailLogin } from './methods/EmailLogin'
@@ -61,8 +62,6 @@ export class Login {
         otpCodeEntry: '[data-testid="codeEntry"]',
         backButton: '#back-button',
         bingProfile: '#id_n',
-        requestToken: 'input[name="__RequestVerificationToken"]',
-        requestTokenMeta: 'meta[name="__RequestVerificationToken"]',
         otpInput: 'div[data-testid="codeEntry"]'
     } as const
 
@@ -79,7 +78,7 @@ export class Login {
             this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Starting login process')
 
             await page
-                .goto('https://rewards.bing.com/createuser?idru=%2F&userScenarioId=anonsignin', {
+                .goto(URLs.rewards.createUser, {
                     waitUntil: 'domcontentloaded'
                 })
                 .catch(() => {})
@@ -146,7 +145,7 @@ export class Login {
                 throw new Error('Login timeout: exceeded maximum iterations')
             }
 
-            await this.finalizeLogin(page, account.email)
+            await this.finalizeLogin(page, account)
         } catch (error) {
             this.bot.logger.error(
                 this.bot.isMobile,
@@ -193,8 +192,8 @@ export class Login {
             [this.selectors.passwordlessCheck, 'LOGIN_PASSWORDLESS'],
             [this.selectors.totpInput, '2FA_TOTP'],
             [this.selectors.totpInputOld, '2FA_TOTP'],
-            [this.selectors.otpCodeEntry, 'OTP_CODE_ENTRY'], // PR 450
-            [this.selectors.otpInput, 'OTP_CODE_ENTRY'] // My Fix
+            [this.selectors.otpCodeEntry, 'OTP_CODE_ENTRY'],
+            [this.selectors.otpInput, 'OTP_CODE_ENTRY']
         ]
 
         const results = await Promise.all(
@@ -233,18 +232,14 @@ export class Login {
         }
 
         if (foundStates.includes('ERROR_ALERT')) {
+            const errorIsReal = url.hostname === 'login.live.com' && !foundStates.includes('2FA_TOTP')
             this.bot.logger.debug(
                 this.bot.isMobile,
                 'DETECT-STATE',
-                `ERROR_ALERT found - hostname: ${url.hostname}, has 2FA: ${foundStates.includes('2FA_TOTP')}`
+                `ERROR_ALERT found - hostname: ${url.hostname}, has 2FA: ${foundStates.includes('2FA_TOTP')}, treating as real: ${errorIsReal}`
             )
-            if (url.hostname !== 'login.live.com') {
-                foundStates = foundStates.filter(s => s !== 'ERROR_ALERT')
-            }
-            if (foundStates.includes('2FA_TOTP')) {
-                foundStates = foundStates.filter(s => s !== 'ERROR_ALERT')
-            }
-            if (foundStates.includes('ERROR_ALERT')) return 'ERROR_ALERT'
+            if (errorIsReal) return 'ERROR_ALERT'
+            foundStates = foundStates.filter(s => s !== 'ERROR_ALERT')
         }
 
         const priorities: LoginState[] = [
@@ -281,6 +276,22 @@ export class Login {
             .catch(() => false)
     }
 
+    private async waitForIdle(page: Page, note: string, timeout = 5000): Promise<void> {
+        await page.waitForLoadState('networkidle', { timeout }).catch(() => {
+            this.bot.logger.debug(this.bot.isMobile, 'LOGIN', `Network idle timeout: ${note}`)
+        })
+    }
+
+    private async tryClick(page: Page, selector: string, label: string, timeout = 2000): Promise<boolean> {
+        const found = await page.waitForSelector(selector, { state: 'visible', timeout }).catch(() => null)
+        if (!found) return false
+
+        await this.bot.browser.utils.ghostClick(page, selector)
+        await this.waitForIdle(page, `after ${label}`)
+        this.bot.logger.info(this.bot.isMobile, 'LOGIN', `${label} clicked`)
+        return true
+    }
+
     private async handleState(state: LoginState, page: Page, account: Account): Promise<boolean> {
         this.bot.logger.debug(this.bot.isMobile, 'HANDLE-STATE', `Processing state: ${state}`)
 
@@ -304,9 +315,7 @@ export class Login {
             case 'EMAIL_INPUT': {
                 this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Entering email')
                 await this.emailLogin.enterEmail(page, account.email)
-                await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {
-                    this.bot.logger.debug(this.bot.isMobile, 'LOGIN', 'Network idle timeout after email entry')
-                })
+                await this.waitForIdle(page, 'after email entry')
                 this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Email entered successfully')
                 return true
             }
@@ -314,9 +323,7 @@ export class Login {
             case 'PASSWORD_INPUT': {
                 this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Entering password')
                 await this.emailLogin.enterPassword(page, account.password)
-                await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {
-                    this.bot.logger.debug(this.bot.isMobile, 'LOGIN', 'Network idle timeout after password entry')
-                })
+                await this.waitForIdle(page, 'after password entry')
                 this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Password entered successfully')
                 return true
             }
@@ -324,50 +331,14 @@ export class Login {
             case 'GET_A_CODE': {
                 this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Attempting to bypass "Get code" page')
 
-                // Try to find "Other ways to sign in" link
-                const otherWaysLink = await page
-                    .waitForSelector(this.selectors.otherWaysToSignIn, { state: 'visible', timeout: 3000 })
-                    .catch(() => null)
-
-                if (otherWaysLink) {
-                    this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Found "Other ways to sign in" link')
-                    await this.bot.browser.utils.ghostClick(page, this.selectors.otherWaysToSignIn)
-                    await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {
-                        this.bot.logger.debug(
-                            this.bot.isMobile,
-                            'LOGIN',
-                            'Network idle timeout after clicking other ways'
-                        )
-                    })
-                    this.bot.logger.info(this.bot.isMobile, 'LOGIN', '"Other ways to sign in" clicked')
+                // Try each bypass option in order
+                if (await this.tryClick(page, this.selectors.otherWaysToSignIn, 'Other ways to sign in', 3000)) {
                     return true
                 }
-
-                // Fallback: try the generic viewFooter selector
-                const footerLink = await page
-                    .waitForSelector(this.selectors.viewFooter, { state: 'visible', timeout: 2000 })
-                    .catch(() => null)
-
-                if (footerLink) {
-                    await this.bot.browser.utils.ghostClick(page, this.selectors.viewFooter)
-                    await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {
-                        this.bot.logger.debug(this.bot.isMobile, 'LOGIN', 'Network idle timeout after footer click')
-                    })
-                    this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Footer link clicked')
+                if (await this.tryClick(page, this.selectors.viewFooter, 'Footer link')) {
                     return true
                 }
-
-                // If no links found, try clicking back button
-                const backBtn = await page
-                    .waitForSelector(this.selectors.backButton, { state: 'visible', timeout: 2000 })
-                    .catch(() => null)
-
-                if (backBtn) {
-                    this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'No sign in options found, clicking back button')
-                    await this.bot.browser.utils.ghostClick(page, this.selectors.backButton)
-                    await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {
-                        this.bot.logger.debug(this.bot.isMobile, 'LOGIN', 'Network idle timeout after back button')
-                    })
+                if (await this.tryClick(page, this.selectors.backButton, 'Back button')) {
                     return true
                 }
 
@@ -378,9 +349,7 @@ export class Login {
             case 'GET_A_CODE_2': {
                 this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Handling "Get a code" flow')
                 await this.bot.browser.utils.ghostClick(page, this.selectors.primaryButton)
-                await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {
-                    this.bot.logger.debug(this.bot.isMobile, 'LOGIN', 'Network idle timeout after primary button click')
-                })
+                await this.waitForIdle(page, 'after primary button click')
                 this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Initiating code login handler')
                 await this.codeLogin.handle(page)
                 this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Code login handler completed successfully')
@@ -390,14 +359,16 @@ export class Login {
             case 'SIGN_IN_ANOTHER_WAY_EMAIL': {
                 this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Selecting "Send a code to email"')
 
-                const emailSelector = await Promise.race([
-                    this.checkSelector(page, this.selectors.emailIcon).then(found =>
-                        found ? this.selectors.emailIcon : null
-                    ),
-                    this.checkSelector(page, this.selectors.emailIconOld).then(found =>
-                        found ? this.selectors.emailIconOld : null
-                    )
+                const [emailIconFound, emailIconOldFound] = await Promise.all([
+                    this.checkSelector(page, this.selectors.emailIcon),
+                    this.checkSelector(page, this.selectors.emailIconOld)
                 ])
+
+                const emailSelector = emailIconFound
+                    ? this.selectors.emailIcon
+                    : emailIconOldFound
+                      ? this.selectors.emailIconOld
+                      : null
 
                 if (!emailSelector) {
                     this.bot.logger.warn(this.bot.isMobile, 'LOGIN', 'Email icon not found')
@@ -410,9 +381,7 @@ export class Login {
                     `Using ${emailSelector === this.selectors.emailIcon ? 'new' : 'old'} email icon selector`
                 )
                 await this.bot.browser.utils.ghostClick(page, emailSelector)
-                await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {
-                    this.bot.logger.debug(this.bot.isMobile, 'LOGIN', 'Network idle timeout after email icon click')
-                })
+                await this.waitForIdle(page, 'after email icon click')
                 this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Initiating code login handler')
                 await this.codeLogin.handle(page)
                 this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Code login handler completed successfully')
@@ -421,9 +390,7 @@ export class Login {
 
             case 'RECOVERY_EMAIL_INPUT': {
                 this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Recovery email input detected')
-                await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {
-                    this.bot.logger.debug(this.bot.isMobile, 'LOGIN', 'Network idle timeout on recovery page')
-                })
+                await this.waitForIdle(page, 'on recovery page')
                 this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Initiating recovery email handler')
                 await this.recoveryLogin.handle(page, account?.recoveryEmail)
                 this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Recovery email handler completed successfully')
@@ -433,9 +400,9 @@ export class Login {
             case 'CHROMEWEBDATA_ERROR': {
                 this.bot.logger.warn(this.bot.isMobile, 'LOGIN', 'chromewebdata error detected, attempting recovery')
                 try {
-                    this.bot.logger.info(this.bot.isMobile, 'LOGIN', `Navigating to ${this.bot.config.baseURL}`)
+                    this.bot.logger.info(this.bot.isMobile, 'LOGIN', `Navigating to ${REWARDS_BASE_URL}`)
                     await page
-                        .goto(this.bot.config.baseURL, {
+                        .goto(REWARDS_BASE_URL, {
                             waitUntil: 'domcontentloaded',
                             timeout: 10000
                         })
@@ -446,7 +413,7 @@ export class Login {
                 } catch {
                     this.bot.logger.warn(this.bot.isMobile, 'LOGIN', 'Fallback to login.live.com')
                     await page
-                        .goto('https://login.live.com/', {
+                        .goto(URLs.auth.loginLive, {
                             waitUntil: 'domcontentloaded',
                             timeout: 10000
                         })
@@ -467,9 +434,7 @@ export class Login {
             case 'SIGN_IN_ANOTHER_WAY': {
                 this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Selecting "Use my password"')
                 await this.bot.browser.utils.ghostClick(page, this.selectors.passwordIcon)
-                await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {
-                    this.bot.logger.debug(this.bot.isMobile, 'LOGIN', 'Network idle timeout after password icon click')
-                })
+                await this.waitForIdle(page, 'after password icon click')
                 this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Password option selected')
                 return true
             }
@@ -477,9 +442,7 @@ export class Login {
             case 'KMSI_PROMPT': {
                 this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Accepting KMSI prompt')
                 await this.bot.browser.utils.ghostClick(page, this.selectors.primaryButton)
-                await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {
-                    this.bot.logger.debug(this.bot.isMobile, 'LOGIN', 'Network idle timeout after KMSI acceptance')
-                })
+                await this.waitForIdle(page, 'after KMSI acceptance')
                 this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'KMSI prompt accepted')
                 return true
             }
@@ -488,9 +451,7 @@ export class Login {
             case 'PASSKEY_ERROR': {
                 this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Skipping Passkey prompt')
                 await this.bot.browser.utils.ghostClick(page, this.selectors.secondaryButton)
-                await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {
-                    this.bot.logger.debug(this.bot.isMobile, 'LOGIN', 'Network idle timeout after Passkey skip')
-                })
+                await this.waitForIdle(page, 'after Passkey skip')
                 this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Passkey prompt skipped')
                 return true
             }
@@ -498,9 +459,7 @@ export class Login {
             case 'LOGIN_PASSWORDLESS': {
                 this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Handling passwordless authentication')
                 await this.passwordlessLogin.handle(page)
-                await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {
-                    this.bot.logger.debug(this.bot.isMobile, 'LOGIN', 'Network idle timeout after passwordless auth')
-                })
+                await this.waitForIdle(page, 'after passwordless auth')
                 this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Passwordless authentication completed successfully')
                 return true
             }
@@ -512,31 +471,15 @@ export class Login {
                     'OTP code entry page detected, attempting to find password option'
                 )
 
-                // My Fix: Click "Use your password" footer
-                const footerLink = await page
-                    .waitForSelector(this.selectors.viewFooter, { state: 'visible', timeout: 2000 })
-                    .catch(() => null)
-
-                if (footerLink) {
-                    await this.bot.browser.utils.ghostClick(page, this.selectors.viewFooter)
-                    this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Footer link clicked')
+                // Prefer the "Use your password"
+                if (await this.tryClick(page, this.selectors.viewFooter, 'Footer link')) {
+                    // clicked
+                } else if (await this.tryClick(page, this.selectors.backButton, 'Back button')) {
+                    // clicked
                 } else {
-                    // PR 450 Fix: Click Back Button if footer not found
-                    const backButton = await page
-                        .waitForSelector(this.selectors.backButton, { state: 'visible', timeout: 2000 })
-                        .catch(() => null)
-
-                    if (backButton) {
-                        await this.bot.browser.utils.ghostClick(page, this.selectors.backButton)
-                        this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Back button clicked')
-                    } else {
-                        this.bot.logger.warn(this.bot.isMobile, 'LOGIN', 'No navigation option found on OTP page')
-                    }
+                    this.bot.logger.warn(this.bot.isMobile, 'LOGIN', 'No navigation option found on OTP page')
                 }
 
-                await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {
-                    this.bot.logger.debug(this.bot.isMobile, 'LOGIN', 'Network idle timeout after OTP navigation')
-                })
                 this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Navigated back from OTP entry page')
                 return true
             }
@@ -557,10 +500,10 @@ export class Login {
         }
     }
 
-    private async finalizeLogin(page: Page, email: string) {
+    private async finalizeLogin(page: Page, account: Account) {
         this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Finalizing login')
 
-        await page.goto(this.bot.config.baseURL, { waitUntil: 'networkidle', timeout: 10000 }).catch(() => {})
+        await page.goto(REWARDS_BASE_URL, { waitUntil: 'networkidle', timeout: 10000 }).catch(() => {})
 
         const loginRewardsSuccess = new URL(page.url()).hostname === 'rewards.bing.com'
         if (loginRewardsSuccess) {
@@ -569,23 +512,29 @@ export class Login {
             this.bot.logger.warn(this.bot.isMobile, 'LOGIN', 'Could not verify Rewards Dashboard, assuming login valid')
         }
 
-        this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Starting Bing session verification')
-        await this.verifyBingSession(page)
+        // Dismiss at rewards dashboard
+        await this.bot.browser.utils.tryDismissAllMessages(page).catch(() => {})
 
-        this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Starting rewards session verification')
+        this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Starting Bing session verification')
+        await this.verifyBingSession(page, account)
+
+        this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Acquiring rewards context')
         await this.getRewardsSession(page)
 
-        const browser = page.context()
-        const cookies = await browser.cookies()
-        this.bot.logger.debug(this.bot.isMobile, 'LOGIN', `Retrieved ${cookies.length} cookies`)
-        await saveSessionData(this.bot.config.sessionPath, cookies, email, this.bot.isMobile)
+        const context = page.context()
+        const storageState = await context.storageState()
+        this.bot.logger.debug(
+            this.bot.isMobile,
+            'LOGIN',
+            `Saving session | cookies=${storageState.cookies.length} | origins=${storageState.origins.length}`
+        )
+        saveStorageState(this.bot.config.sessionPath, account.email, this.bot.isMobile, storageState)
 
         this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Login completed, session saved')
     }
 
-    async verifyBingSession(page: Page) {
-        const url =
-            'https://www.bing.com/fd/auth/signin?action=interactive&provider=windows_live_id&return_url=https%3A%2F%2Fwww.bing.com%2F'
+    async verifyBingSession(page: Page, account: Account) {
+        const url = URLs.auth.bingSignIn
         const loopMax = 5
 
         this.bot.logger.info(this.bot.isMobile, 'LOGIN-BING', 'Verifying Bing session')
@@ -603,6 +552,9 @@ export class Login {
                     this.bot.logger.info(this.bot.isMobile, 'LOGIN-BING', 'Dismissing Passkey error state')
                     await this.bot.browser.utils.ghostClick(page, this.selectors.secondaryButton)
                 }
+
+                // Handle stats in case of password etc
+                await this.handleState(state, page, account)
 
                 const u = new URL(page.url())
                 const atBingHome = u.hostname === 'www.bing.com' && u.pathname === '/'
@@ -642,85 +594,42 @@ export class Login {
     }
 
     private async getRewardsSession(page: Page) {
-        const loopMax = 5
-
-        this.bot.logger.info(this.bot.isMobile, 'GET-REWARD-SESSION', 'Fetching request token')
+        this.bot.logger.info(this.bot.isMobile, 'GET-REWARD-SESSION', 'Bootstrapping rewards context')
 
         try {
-            await page
-                .goto(`${this.bot.config.baseURL}?_=${Date.now()}`, { waitUntil: 'networkidle', timeout: 10000 })
-                .catch(() => {})
+            await this.bot.browser.func.bootstrap(page)
 
-            for (let i = 0; i < loopMax; i++) {
-                if (page.isClosed()) break
+            const actionsCount = Object.keys(this.bot.nextActions).length
+            const snapshot = this.bot.reactSnapshot
+            const reportableCount = snapshot?.reportable.length ?? 0
+            const availablePoints = snapshot?.account.availablePoints ?? null
 
-                this.bot.logger.debug(this.bot.isMobile, 'GET-REWARD-SESSION', `Token fetch loop ${i + 1}/${loopMax}`)
-
-                const u = new URL(page.url())
-                const atRewardHome = u.hostname === 'rewards.bing.com' && u.pathname === '/'
-
-                if (atRewardHome) {
-                    await this.bot.browser.utils.tryDismissAllMessages(page)
-
-                    const html = await page.content()
-                    const $ = await this.bot.browser.utils.loadInCheerio(html)
-
-                    // Check which version of the dashboard is being used, disable requestToken req on new dash
-                    const isModernDashboard = $('section#dailyset').length > 0 // Only on new UI and on dashboard/overview page
-
-                    if (isModernDashboard) {
-                        this.bot.rewardsVersion = 'modern'
-
-                        this.bot.logger.warn(
-                            this.bot.isMobile,
-                            'GET-REWARD-SESSION',
-                            'Modern Rewards dashboard detected. This script version may not fully support it.'
-                        )
-
-                        this.bot.logger.warn(
-                            this.bot.isMobile,
-                            'GET-REWARD-SESSION',
-                            'RequestToken disabled for this session (expected behavior).'
-                        )
-                    }
-
-                    const token =
-                        $(this.selectors.requestToken).attr('value') ??
-                        $(this.selectors.requestTokenMeta).attr('content') ??
-                        null
-
-                    if (token) {
-                        this.bot.requestToken = token
-                        this.bot.logger.info(
-                            this.bot.isMobile,
-                            'GET-REWARD-SESSION',
-                            `Request token retrieved: ${token.substring(0, 10)}...`
-                        )
-                        return
-                    }
-
-                    this.bot.logger.debug(this.bot.isMobile, 'GET-REWARD-SESSION', 'Token not found on page')
-                } else {
-                    this.bot.logger.debug(
-                        this.bot.isMobile,
-                        'GET-REWARD-SESSION',
-                        `Not at reward home: ${u.hostname}${u.pathname}`
-                    )
-                }
-
-                await this.bot.utils.wait(1000)
+            if (!actionsCount) {
+                this.bot.logger.warn(
+                    this.bot.isMobile,
+                    'GET-REWARD-SESSION',
+                    'No action ids resolved - server-action calls (report/streak protection) will be skipped this run'
+                )
             }
 
-            this.bot.logger.warn(
+            if (!snapshot || !snapshot.offers.length) {
+                this.bot.logger.warn(
+                    this.bot.isMobile,
+                    'GET-REWARD-SESSION',
+                    'Page snapshot empty - the /earn page may not have rendered the RSC payload'
+                )
+            }
+
+            this.bot.logger.info(
                 this.bot.isMobile,
                 'GET-REWARD-SESSION',
-                'No RequestVerificationToken found, some activities may not work'
+                `Context ready | actions=${actionsCount} | reportable=${reportableCount} | available=${availablePoints}`
             )
         } catch (error) {
             throw this.bot.logger.error(
                 this.bot.isMobile,
                 'GET-REWARD-SESSION',
-                `Fatal error: ${error instanceof Error ? error.message : String(error)}`
+                `Failed to acquire rewards context: ${error instanceof Error ? error.message : String(error)}`
             )
         }
     }

@@ -3,7 +3,7 @@ import { newInjectedContext } from 'fingerprint-injector'
 import { BrowserFingerprintWithHeaders, FingerprintGenerator } from 'fingerprint-generator'
 
 import type { MicrosoftRewardsBot } from '../index'
-import { loadSessionData, saveFingerprintData } from '../util/Load'
+import { loadSession, saveFingerprint } from '../util/SessionStore'
 import { UserAgentManager } from './UserAgent'
 
 import type { Account, AccountProxy } from '../interface/Account'
@@ -24,19 +24,19 @@ interface BrowserCreationResult {
 class Browser {
     private readonly bot: MicrosoftRewardsBot
     private static readonly BROWSER_ARGS = [
-        '--no-sandbox',
         '--mute-audio',
-        '--disable-setuid-sandbox',
-        '--ignore-certificate-errors',
-        '--ignore-certificate-errors-spki-list',
-        '--ignore-ssl-errors',
         '--no-first-run',
         '--no-default-browser-check',
         '--disable-web-authentication-ui',
         '--disable-external-intent-requests',
-        '--disable-blink-features=Attestation',
+        '--disable-blink-features=AutomationControlled,Attestation',
         '--disable-features=WebAuthentication,PasswordManagerOnboarding,PasswordManager,EnablePasswordsAccountStorage,Passkeys,WebAuthenticationProxy,U2F',
-        '--disable-save-password-bubble'
+        '--disable-save-password-bubble',
+        '--disable-dev-shm-usage',
+        '--disable-background-networking',
+        '--disable-backgrounding-occluded-windows',
+        '--disable-renderer-backgrounding',
+        '--disable-component-update'
     ] as const
 
     constructor(bot: MicrosoftRewardsBot) {
@@ -44,6 +44,10 @@ class Browser {
     }
 
     async createBrowser(account: Account): Promise<BrowserCreationResult> {
+        const headless = this.bot.config.headless
+
+        const hasProxy = Boolean(account.proxy.url)
+
         let browser: rebrowser.Browser
         try {
             const proxyConfig = account.proxy.url
@@ -57,64 +61,116 @@ class Browser {
                   }
                 : undefined
 
+            const sandboxArgs = process.platform === 'win32' ? [] : ['--no-sandbox', '--disable-setuid-sandbox']
+
+            const certArgs = hasProxy
+                ? ['--ignore-certificate-errors', '--ignore-certificate-errors-spki-list', '--ignore-ssl-errors']
+                : []
+
+            this.bot.logger.info(
+                this.bot.isMobile,
+                'BROWSER',
+                `Launching bundled patched Chromium (Edge UA) | headless: ${headless} | platform: ${process.platform} | proxy: ${hasProxy ? 'yes (TLS errors ignored)' : 'no (TLS validated)'}`
+            )
+
             browser = await rebrowser.chromium.launch({
-                headless: this.bot.config.headless,
+                headless,
                 ...(proxyConfig && { proxy: proxyConfig }),
-                args: [...Browser.BROWSER_ARGS]
+                args: [...Browser.BROWSER_ARGS, ...sandboxArgs, ...certArgs]
             })
         } catch (error) {
             const errorMessage = error instanceof Error ? error.message : String(error)
-            this.bot.logger.error(this.bot.isMobile, 'BROWSER', `Launch failed: ${errorMessage}`)
+            this.bot.logger.error(this.bot.isMobile, 'BROWSER', `Browser launch failed: ${errorMessage}`)
             throw error
         }
 
         try {
-            const sessionData = await loadSessionData(
-                this.bot.config.sessionPath,
-                account.email,
-                account.saveFingerprint,
-                this.bot.isMobile
-            )
+            const session = loadSession(this.bot.config.sessionPath, account.email, this.bot.isMobile)
 
-            const fingerprint = sessionData.fingerprint ?? (await this.generateFingerprint(this.bot.isMobile))
+            const shouldUseFingerprint = this.bot.isMobile
+                ? account.saveFingerprint.mobile
+                : account.saveFingerprint.desktop
 
+            const fingerprint =
+                (shouldUseFingerprint && session?.fingerprint) || (await this.generateFingerprint(this.bot.isMobile))
 
-            const context = await newInjectedContext(browser as any, {
+            const screen = fingerprint.fingerprint.screen
+
+            //@ts-expect-error It doesn't like the browser instance from different packages
+            const injected = await newInjectedContext(browser, {
                 fingerprint,
                 newContextOptions: {
                     permissions: [],
-                    ignoreHTTPSErrors: true
+                    ignoreHTTPSErrors: hasProxy,
+                    // Restore cookies
+                    ...(session?.storageState ? { storageState: session.storageState } : {}),
+                    ...(this.bot.isMobile
+                        ? {
+                              isMobile: true,
+                              hasTouch: true,
+                              deviceScaleFactor: screen.devicePixelRatio,
+                              viewport: { width: screen.width, height: screen.height },
+                              screen: { width: screen.width, height: screen.height }
+                          }
+                        : {})
                 }
             })
+            const context = injected as unknown as BrowserContext
 
             await context.addInitScript(() => {
-                Object.defineProperty(navigator, 'credentials', {
-                    value: {
-                        create: () => Promise.reject(new Error('WebAuthn disabled')),
-                        get: () => Promise.reject(new Error('WebAuthn disabled'))
+                try {
+                    Object.defineProperty(navigator, 'webdriver', { configurable: true, get: () => false })
+                } catch {}
+
+                const rejectWebAuthn = () => Promise.reject(new DOMException('WebAuthn disabled', 'NotAllowedError'))
+                try {
+                    Object.defineProperty(navigator, 'credentials', {
+                        configurable: true,
+                        get: () => ({
+                            create: rejectWebAuthn,
+                            get: rejectWebAuthn,
+                            preventSilentAccess: () => Promise.resolve()
+                        })
+                    })
+                } catch {}
+
+                try {
+                    if (window.PublicKeyCredential) {
+                        window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable = () =>
+                            Promise.resolve(false)
                     }
-                })
+                } catch {}
+
+                // Block WebRTC so the real ip can't leak past the proxy
+                // @ts-expect-error Removing since it might potentionally, kinda unsurely leak the machine's details to browser
+                delete window.RTCPeerConnection
+                // @ts-expect-error Same as above
+                delete window.webkitRTCPeerConnection
+                // @ts-expect-error if you read this, Netsky was here struggling :(
+                delete window.RTCDataChannel
             })
+
+            context.on('page', p => {
+                p.on('crash', () =>
+                    this.bot.logger.error(this.bot.isMobile, 'BROWSER', `Renderer crashed | ${p.url()}`)
+                )
+            })
+            context.on('close', () => this.bot.logger.warn(this.bot.isMobile, 'BROWSER', 'Browser context closed'))
 
             context.setDefaultTimeout(this.bot.utils.stringToNumber(this.bot.config?.globalTimeout ?? 30000))
 
-            await context.addCookies(sessionData.cookies)
-
-            if (
-                (account.saveFingerprint.mobile && this.bot.isMobile) ||
-                (account.saveFingerprint.desktop && !this.bot.isMobile)
-            ) {
-                await saveFingerprintData(this.bot.config.sessionPath, account.email, this.bot.isMobile, fingerprint)
+            if (shouldUseFingerprint) {
+                saveFingerprint(this.bot.config.sessionPath, account.email, this.bot.isMobile, fingerprint)
             }
 
             this.bot.logger.info(
                 this.bot.isMobile,
                 'BROWSER',
-                `Created browser with User-Agent: "${fingerprint.fingerprint.navigator.userAgent}"`
+                `Created context | User-Agent: "${fingerprint.fingerprint.navigator.userAgent}"`
             )
             this.bot.logger.debug(this.bot.isMobile, 'BROWSER-FINGERPRINT', JSON.stringify(fingerprint))
 
-            return { context: context as unknown as BrowserContext, fingerprint }
+            return { context, fingerprint }
         } catch (error) {
             await browser.close().catch(() => {})
             throw error
@@ -131,17 +187,18 @@ class Browser {
         }
     }
 
-    async generateFingerprint(isMobile: boolean) {
+    async generateFingerprint(isMobile: boolean): Promise<BrowserFingerprintWithHeaders> {
+        const hostOs: 'windows' | 'macos' | 'linux' =
+            process.platform === 'darwin' ? 'macos' : process.platform === 'linux' ? 'linux' : 'windows'
+
         const fingerPrintData = new FingerprintGenerator().getFingerprint({
             devices: isMobile ? ['mobile'] : ['desktop'],
-            operatingSystems: isMobile ? ['android', 'ios'] : ['windows', 'linux'],
+            operatingSystems: isMobile ? ['android'] : [hostOs],
             browsers: [{ name: 'edge' }]
         })
 
         const userAgentManager = new UserAgentManager(this.bot)
-        const updatedFingerPrintData = await userAgentManager.updateFingerprintUserAgent(fingerPrintData, isMobile)
-
-        return updatedFingerPrintData
+        return await userAgentManager.updateFingerprintUserAgent(fingerPrintData, isMobile)
     }
 }
 

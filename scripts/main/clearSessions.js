@@ -1,61 +1,61 @@
-import path from 'path'
-import fs from 'fs'
-import { getDirname, getProjectRoot, log, loadJsonFile, safeRemoveDirectory } from '../utils.js'
+import {
+    getDirname,
+    getProjectRoot,
+    log,
+    parseArgs,
+    loadConfig,
+    getSessionDbPath,
+    openSessionDb,
+    listSessionRows,
+    clearSessionRows,
+    closeSessionDb
+} from '../utils.js'
 
 const __dirname = getDirname(import.meta.url)
 const projectRoot = getProjectRoot(__dirname)
 
-const possibleConfigPaths = [
-    path.join(projectRoot, 'config.json'),
-    path.join(projectRoot, 'src', 'config.json'),
-    path.join(projectRoot, 'dist', 'config.json')
-]
+const args = parseArgs()
 
-log('DEBUG', 'Project root:', projectRoot)
-log('DEBUG', 'Searching for config.json...')
+const email = typeof args.email === 'string' ? args.email : null
 
-const configResult = loadJsonFile(possibleConfigPaths, true)
-const config = configResult.data
-const configPath = configResult.path
+const { data: config } = loadConfig(projectRoot)
 
-log('INFO', 'Using config:', configPath)
+const { dbPath, exists } = getSessionDbPath(projectRoot, config.sessionPath)
 
-if (!config.sessionPath) {
-    log('ERROR', 'Invalid config.json - missing required field: sessionPath')
-    log('ERROR', `Config file: ${configPath}`)
-    process.exit(1)
+if (!exists) {
+    log('INFO', `No sessions database found (looked for ${dbPath}) - nothing to clear.`)
+    process.exit(0)
 }
 
-log('INFO', 'Session path from config:', config.sessionPath)
+const db = openSessionDb(dbPath, { readonly: false })
 
-const configDir = path.dirname(configPath)
-const possibleSessionDirs = [
-    path.resolve(configDir, config.sessionPath),
-    path.join(projectRoot, 'src/browser', config.sessionPath),
-    path.join(projectRoot, 'dist/browser', config.sessionPath)
-]
+let rows = []
+try {
+    rows = listSessionRows(db)
+} catch {}
 
-log('DEBUG', 'Searching for session directory...')
+if (!rows.length) {
+    log('INFO', `Sessions database is empty (${dbPath}) - nothing to clear.`)
+    closeSessionDb(db)
+    process.exit(0)
+}
 
-let sessionDir = null
-for (const p of possibleSessionDirs) {
-    log('DEBUG', 'Checking:', p)
-    if (fs.existsSync(p)) {
-        sessionDir = p
-        log('DEBUG', 'Found session directory at:', p)
-        break
+if (email) {
+    const matches = rows.filter(r => r.email.toLowerCase() === email.toLowerCase())
+    if (!matches.length) {
+        log('WARN', `No stored sessions for ${email}. Stored accounts:`)
+        const uniqueEmails = [...new Set(rows.map(r => r.email))]
+        uniqueEmails.forEach(e => log('WARN', `  - ${e}`))
+        closeSessionDb(db)
+        process.exit(0)
     }
+    log('INFO', `Clearing ${matches.length} session row(s) for ${email}...`)
+} else {
+    log('INFO', `Clearing all ${rows.length} session row(s) from ${dbPath}...`)
 }
 
-if (!sessionDir) {
-    sessionDir = path.resolve(configDir, config.sessionPath)
-    log('DEBUG', 'Using fallback session directory:', sessionDir)
-}
+const removed = clearSessionRows(db, email)
+closeSessionDb(db)
 
-const success = safeRemoveDirectory(sessionDir, projectRoot)
-
-if (!success) {
-    process.exit(1)
-}
-
+log('SUCCESS', `Removed ${removed} session row(s).`)
 log('INFO', 'Done.')

@@ -75,6 +75,11 @@ RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debia
     libxss1 \
     libxtst6 \
     libdouble-conversion3 \
+    fonts-liberation \
+    fonts-noto-core \
+    fonts-noto-color-emoji \
+    fonts-freefont-ttf \
+    fonts-droid-fallback \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 
 # Copy compiled application and dependencies from builder stage
@@ -82,16 +87,21 @@ COPY --from=builder /usr/src/microsoft-rewards-script/dist ./dist
 COPY --from=builder /usr/src/microsoft-rewards-script/package*.json ./
 COPY --from=builder /usr/src/microsoft-rewards-script/node_modules ./node_modules
 
+# Install patchright's stealth-patched Chromium headless shell.
+# The container is headless-only so the full browser isn't needed; then clean up
+RUN set -eux; \
+    npx patchright install --with-deps --only-shell chromium; \
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
 # Copy config example into the image so entrypoint can use it as a fallback
 # when the user hasn't mounted their own config.json
-COPY src/config.example.json ./src/config.example.json
+COPY config.example.json ./config.example.json
 
-# Create the config directory and symlink config.json and accounts.json into
-# dist/ so the app finds them at its expected paths, while the entrypoint
-# writes to dist/config/ which maps to the user-facing ./config/ volume mount
-RUN mkdir -p ./dist/config \
-    && ln -s /usr/src/microsoft-rewards-script/dist/config/config.json ./dist/config.json \
-    && ln -s /usr/src/microsoft-rewards-script/dist/config/accounts.json ./dist/accounts.json
+# config.json is managed via the ./config bind mount (compose.yaml mounts
+# ./config to /usr/src/microsoft-rewards-script/config). On first run the
+# entrypoint generates config/config.json from this example if none exists,
+# then symlinks it to the project root where the script expects it.
+# Accounts come from ACCOUNT_N_* env vars, so no accounts.json is needed.
 
 # Copy runtime scripts with proper permissions from the start
 COPY --chmod=755 scripts/docker/run_daily.sh ./scripts/docker/run_daily.sh

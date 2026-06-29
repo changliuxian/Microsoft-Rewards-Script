@@ -1,6 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Preserve any value injected by the caller (e.g. SKIP_RANDOM_SLEEP=true from
+# entrypoint's RUN_ON_START prefix) before the env file can override it.
+_SKIP_SLEEP_OVERRIDE="${SKIP_RANDOM_SLEEP:-}"
+
+# Restore container environment (ACCOUNT_*, CONFIG_*, etc.) lost when cron spawns this job
+if [ -f /etc/container_env ]; then
+    # shellcheck source=/dev/null
+    . /etc/container_env
+fi
+
+# Re-apply the caller's override so sourcing /etc/container_env can't reset it.
+[ -n "$_SKIP_SLEEP_OVERRIDE" ] && SKIP_RANDOM_SLEEP="$_SKIP_SLEEP_OVERRIDE"
+unset _SKIP_SLEEP_OVERRIDE
+
 export PLAYWRIGHT_BROWSERS_PATH=0
 export TZ="${TZ:-UTC}"
 
@@ -113,7 +127,7 @@ release_lock() {
     fi
 }
 
-# Always release lock on exit — but only if we acquired it
+# Always release lock on exit - but only if we acquired it
 trap 'release_lock' EXIT INT TERM
 
 # -------------------------------

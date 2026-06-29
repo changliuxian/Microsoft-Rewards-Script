@@ -1,147 +1,136 @@
-import type { AxiosRequestConfig } from 'axios'
+import type { HttpRequestConfig } from '../util/Http'
 import * as fs from 'fs'
 import path from 'path'
+import { XMLParser } from 'fast-xml-parser'
+
+import { URLs } from '../constants/urls'
+import { RSS_FEEDS } from '../constants/rssFeeds'
 import type {
     GoogleSearch,
     GoogleTrendsResponse,
+    HackerNewsResponse,
     RedditListing,
-    WikipediaTopResponse,
-    CNTrends
+    WikipediaRandomResponse,
+    WikipediaTopResponse
 } from '../interface/Search'
+import type { QueryEngine, QueryEngineEntry } from '../interface/Config'
 import type { MicrosoftRewardsBot } from '../index'
-import { QueryEngine } from '../interface/Config'
+
+const GOOGLE_TRENDS_RPC_ID = 'i0OFE'
+
+const RELATED_EXPANSION_LIMIT = 50
+
+interface QueryManagerOptions {
+    shuffle?: boolean
+    sourceOrder?: QueryEngineEntry[]
+    related?: boolean
+    langCode?: string
+    geoLocale?: string
+}
+
+interface RssEntry {
+    title?: unknown
+}
+interface RssDocument {
+    rss?: { channel?: { item?: RssEntry | RssEntry[] } }
+    'rdf:RDF'?: { item?: RssEntry | RssEntry[] }
+    feed?: { entry?: RssEntry | RssEntry[] }
+}
+
+function toArray(value: RssEntry | RssEntry[] | undefined): RssEntry[] {
+    if (!value) return []
+    return Array.isArray(value) ? value : [value]
+}
+
+function readTitle(title: unknown): string {
+    if (typeof title === 'string') return title
+    if (typeof title === 'number') return String(title)
+    if (title && typeof title === 'object' && '#text' in title) {
+        const text = (title as { '#text'?: unknown })['#text']
+        return typeof text === 'string' ? text : typeof text === 'number' ? String(text) : ''
+    }
+    return ''
+}
+
+function stripHtml(text: string): string {
+    return text.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ')
+}
 
 export class QueryCore {
     constructor(private bot: MicrosoftRewardsBot) {}
 
-    async queryManager(
-        options: {
-            shuffle?: boolean
-            sourceOrder?: QueryEngine[]
-            related?: boolean
-            langCode?: string
-            geoLocale?: string
-        } = {}
-    ): Promise<string[]> {
-        let {
+    async queryManager(options: QueryManagerOptions = {}): Promise<string[]> {
+        const {
             shuffle = false,
-            sourceOrder = ['google', 'wikipedia', 'reddit', 'local'],
+            sourceOrder = ['google', 'wikipedia', 'wikirandom', 'hackernews', 'reddit', 'local'],
             related = true,
             langCode = 'en',
             geoLocale = 'US'
         } = options
 
-        if (geoLocale === 'CN') {
-            sourceOrder = ['customCN', 'local']
-            this.bot.logger.debug(this.bot.isMobile, 'QUERY-MANAGER', `CN geoLocale detected, overriding sourceOrder to ${sourceOrder.join(',')}`)
-        }
-
         try {
-            this.bot.logger.debug(
-                this.bot.isMobile,
-                'QUERY-MANAGER',
-                `start | shuffle=${shuffle}, related=${related}, lang=${langCode}, geo=${geoLocale}, sources=${sourceOrder.join(',')}`
-            )
-
-            const topicLists: string[][] = []
-
-            const sourceHandlers: Record<
-                'google' | 'wikipedia' | 'reddit' | 'local' | 'customCN',
-                (() => Promise<string[]>) | (() => string[])
-            > = {
-                google: async () => {
-                    const topics = await this.getGoogleTrends(geoLocale.toUpperCase()).catch(() => [])
-                    this.bot.logger.debug(this.bot.isMobile, 'QUERY-MANAGER', `google: ${topics.length}`)
-                    return topics
-                },
-                wikipedia: async () => {
-                    const topics = await this.getWikipediaTrending(langCode).catch(() => [])
-                    this.bot.logger.debug(this.bot.isMobile, 'QUERY-MANAGER', `wikipedia: ${topics.length}`)
-                    return topics
-                },
-                reddit: async () => {
-                    const topics = await this.getRedditTopics().catch(() => [])
-                    this.bot.logger.debug(this.bot.isMobile, 'QUERY-MANAGER', `reddit: ${topics.length}`)
-                    return topics
-                },
-                local: () => {
-                    const topics = this.getLocalQueryList()
-                    this.bot.logger.debug(this.bot.isMobile, 'QUERY-MANAGER', `local: ${topics.length}`)
-                    return topics
-                },
-                customCN: async () => {
-                    const topics = await this.getCustomCNTrends().catch(() => [])
-                    this.bot.logger.debug(this.bot.isMobile, 'QUERY-MANAGER', `customCN: ${topics.length}`)
-                    return topics
-                }
+            const sourceHandlers: Record<QueryEngine, () => Promise<string[]> | string[]> = {
+                google: () => this.getGoogleTrends(geoLocale.toUpperCase()).catch(() => []),
+                wikipedia: () => this.getWikipediaTrending(langCode).catch(() => []),
+                wikirandom: () => this.getWikipediaRandom(langCode).catch(() => []),
+                hackernews: () => this.getHackerNewsTopics().catch(() => []),
+                reddit: () => this.getRedditTopics().catch(() => []),
+                local: () => this.getLocalQueryList()
             }
 
-            for (const source of sourceOrder) {
+            const isRss = (s: string) => s === 'rss' || s.startsWith('rss.')
+            const coreSources = sourceOrder.filter(s => !isRss(s)) as QueryEngine[]
+            const rssSelectors = sourceOrder.filter(isRss)
+
+            const topicLists: string[][] = []
+            for (const source of coreSources) {
                 const handler = sourceHandlers[source]
                 if (!handler) continue
 
                 const topics = await Promise.resolve(handler())
+                this.bot.logger.debug(
+                    this.bot.isMobile,
+                    'QUERY-MANAGER',
+                    `Source "${source}" returned ${topics.length}`
+                )
                 if (topics.length) topicLists.push(topics)
             }
 
-            this.bot.logger.debug(
-                this.bot.isMobile,
-                'QUERY-MANAGER',
-                `sources combined | rawTotal=${topicLists.flat().length}`
-            )
+            if (rssSelectors.length) {
+                const rssTopics = await this.getRssTopics(rssSelectors).catch(() => [])
+                this.bot.logger.debug(
+                    this.bot.isMobile,
+                    'QUERY-MANAGER',
+                    `Source "rss" returned ${rssTopics.length} (${rssSelectors.length} selector(s))`
+                )
+                if (rssTopics.length) topicLists.push(rssTopics)
+            }
 
             const baseTopics = this.normalizeAndDedupe(topicLists.flat())
-
             if (!baseTopics.length) {
-                this.bot.logger.debug(this.bot.isMobile, 'QUERY-MANAGER', 'No base topics found (all sources empty)')
+                this.bot.logger.warn(this.bot.isMobile, 'QUERY-MANAGER', 'No topics returned by any source')
                 return []
             }
 
-            this.bot.logger.debug(
-                this.bot.isMobile,
-                'QUERY-MANAGER',
-                `baseTopics dedupe | before=${topicLists.flat().length} | after=${baseTopics.length}`
-            )
-            this.bot.logger.debug(this.bot.isMobile, 'QUERY-MANAGER', `baseTopics: ${baseTopics.length}`)
-
             const clusters = related ? await this.buildRelatedClusters(baseTopics, langCode) : baseTopics.map(t => [t])
-
             this.bot.utils.shuffleArray(clusters)
-            this.bot.logger.debug(this.bot.isMobile, 'QUERY-MANAGER', 'clusters shuffled')
 
             let finalQueries = clusters.flat()
-            this.bot.logger.debug(
-                this.bot.isMobile,
-                'QUERY-MANAGER',
-                `clusters flattened | total=${finalQueries.length}`
-            )
-
-            // Do not cluster searches and shuffle
-            if (shuffle) {
-                this.bot.utils.shuffleArray(finalQueries)
-                this.bot.logger.debug(this.bot.isMobile, 'QUERY-MANAGER', 'finalQueries shuffled')
-            }
+            if (shuffle) this.bot.utils.shuffleArray(finalQueries)
 
             finalQueries = this.normalizeAndDedupe(finalQueries)
             this.bot.logger.debug(
                 this.bot.isMobile,
                 'QUERY-MANAGER',
-                `finalQueries dedupe | after=${finalQueries.length}`
+                `Built query pool | base=${baseTopics.length} | final=${finalQueries.length} | related=${related}`
             )
-
-            if (!finalQueries.length) {
-                this.bot.logger.debug(this.bot.isMobile, 'QUERY-MANAGER', 'finalQueries deduped to 0')
-                return []
-            }
-
-            this.bot.logger.debug(this.bot.isMobile, 'QUERY-MANAGER', `final queries: ${finalQueries.length}`)
 
             return finalQueries
         } catch (error) {
-            this.bot.logger.debug(
+            this.bot.logger.error(
                 this.bot.isMobile,
                 'QUERY-MANAGER',
-                `error: ${error instanceof Error ? `${error.name}: ${error.message}\n${error.stack ?? ''}` : String(error)}`
+                `Failed building query pool | ${error instanceof Error ? error.message : String(error)}`
             )
             return []
         }
@@ -150,45 +139,17 @@ export class QueryCore {
     private async buildRelatedClusters(baseTopics: string[], langCode: string): Promise<string[][]> {
         const clusters: string[][] = []
 
-        const LIMIT = 50
-        const head = baseTopics.slice(0, LIMIT)
-        const tail = baseTopics.slice(LIMIT)
-
-        this.bot.logger.debug(
-            this.bot.isMobile,
-            'QUERY-MANAGER',
-            `related enabled | baseTopics=${baseTopics.length} | expand=${head.length} | passthrough=${tail.length} | lang=${langCode}`
-        )
-        this.bot.logger.debug(
-            this.bot.isMobile,
-            'QUERY-MANAGER',
-            `bing expansion enabled | limit=${LIMIT} | totalCalls=${head.length * 2}`
-        )
+        const head = baseTopics.slice(0, RELATED_EXPANSION_LIMIT)
+        const tail = baseTopics.slice(RELATED_EXPANSION_LIMIT)
 
         for (const topic of head) {
-            const suggestions = await this.getBingSuggestions(topic, langCode).catch(() => [])
-            const relatedTerms = await this.getBingRelatedTerms(topic).catch(() => [])
-
-            const usedSuggestions = suggestions.slice(0, 6)
-            const usedRelated = relatedTerms.slice(0, 3)
-
-            const cluster = this.normalizeAndDedupe([topic, ...usedSuggestions, ...usedRelated])
-
-            this.bot.logger.debug(
-                this.bot.isMobile,
-                'QUERY-MANAGER',
-                `cluster expanded | topic="${topic}" | suggestions=${suggestions.length}->${usedSuggestions.length} | related=${relatedTerms.length}->${usedRelated.length} | clusterSize=${cluster.length}`
-            )
-
-            clusters.push(cluster)
+            const suggestions = (await this.getBingSuggestions(topic, langCode).catch(() => [])).slice(0, 6)
+            const related = (await this.getBingRelatedTerms(topic).catch(() => [])).slice(0, 3)
+            clusters.push(this.normalizeAndDedupe([topic, ...suggestions, ...related]))
         }
 
-        if (tail.length) {
-            this.bot.logger.debug(this.bot.isMobile, 'QUERY-MANAGER', `cluster passthrough | topics=${tail.length}`)
-
-            for (const topic of tail) {
-                clusters.push([topic])
-            }
+        for (const topic of tail) {
+            clusters.push([topic])
         }
 
         return clusters
@@ -199,8 +160,7 @@ export class QueryCore {
         const out: string[] = []
 
         for (const q of queries) {
-            if (!q) continue
-            const trimmed = q.trim()
+            const trimmed = q?.trim()
             if (!trimmed) continue
 
             const norm = trimmed.replace(/\s+/g, ' ').toLowerCase()
@@ -217,19 +177,19 @@ export class QueryCore {
         const queryTerms: GoogleSearch[] = []
 
         try {
-            const request: AxiosRequestConfig = {
-                url: 'https://trends.google.com/_/TrendsUi/data/batchexecute',
+            const request: HttpRequestConfig = {
+                url: URLs.queryEngine.googleTrends,
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'
                 },
-                data: `f.req=[[[i0OFE,"[null, null, \\"${geoLocale.toUpperCase()}\\", 0, null, 48]"]]]`
+                data: `f.req=[[[${GOOGLE_TRENDS_RPC_ID},"[null, null, \\"${geoLocale.toUpperCase()}\\", 0, null, 48]"]]]`
             }
 
-            const response = await this.bot.axios.request(request, this.bot.config.proxy.queryEngine)
+            const response = await this.bot.http.request<string>(request, this.bot.config.proxy.queryEngine)
             const trendsData = this.extractJsonFromResponse(response.data)
             if (!trendsData) {
-                this.bot.logger.debug(this.bot.isMobile, 'SEARCH-GOOGLE-TRENDS', 'No trendsData parsed from response')
+                this.bot.logger.debug(this.bot.isMobile, 'SEARCH-GOOGLE-TRENDS', 'No trends data parsed from response')
                 return []
             }
 
@@ -240,18 +200,13 @@ export class QueryCore {
             }
 
             for (const [topic, related] of mapped) {
-                queryTerms.push({
-                    topic: topic as string,
-                    related: related as string[]
-                })
+                queryTerms.push({ topic: topic as string, related: related as string[] })
             }
         } catch (error) {
             this.bot.logger.debug(
                 this.bot.isMobile,
                 'SEARCH-GOOGLE-TRENDS',
-                `request failed: ${
-                    error instanceof Error ? `${error.name}: ${error.message}\n${error.stack ?? ''}` : String(error)
-                }`
+                `Request failed | ${error instanceof Error ? error.message : String(error)}`
             )
             return []
         }
@@ -272,37 +227,21 @@ export class QueryCore {
 
     async getBingSuggestions(query = '', langCode = 'en'): Promise<string[]> {
         try {
-            const request: AxiosRequestConfig = {
-                url: `https://www.bingapis.com/api/v7/suggestions?q=${encodeURIComponent(
-                    query
-                )}&appid=6D0A9B8C5100E9ECC7E11A104ADD76C10219804B&cc=xl&setlang=${langCode}`,
-                method: 'POST',
-                headers: {
-                    ...(this.bot.fingerprint?.headers ?? {}),
-                    'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8'
-                }
+            const request: HttpRequestConfig = {
+                url: URLs.queryEngine.bingSuggestions(query, langCode),
+                method: 'GET',
+                headers: { ...(this.bot.fingerprint?.headers ?? {}) }
             }
 
-            const response = await this.bot.axios.request(request, this.bot.config.proxy.queryEngine)
-            const suggestions =
-                response.data.suggestionGroups?.[0]?.searchSuggestions?.map((x: { query: any }) => x.query) ?? []
-
-            if (!suggestions.length) {
-                this.bot.logger.debug(
-                    this.bot.isMobile,
-                    'SEARCH-BING-SUGGESTIONS',
-                    `empty suggestions | query="${query}" | lang=${langCode}`
-                )
-            }
-
-            return suggestions
+            const response = await this.bot.http.request<{
+                suggestionGroups?: { searchSuggestions?: { query: string }[] }[]
+            }>(request, this.bot.config.proxy.queryEngine)
+            return response.data.suggestionGroups?.[0]?.searchSuggestions?.map((x: { query: string }) => x.query) ?? []
         } catch (error) {
             this.bot.logger.debug(
                 this.bot.isMobile,
                 'SEARCH-BING-SUGGESTIONS',
-                `request failed | query="${query}" | lang=${langCode} | error=${
-                    error instanceof Error ? `${error.name}: ${error.message}\n${error.stack ?? ''}` : String(error)
-                }`
+                `Request failed | query="${query}" | ${error instanceof Error ? error.message : String(error)}`
             )
             return []
         }
@@ -310,77 +249,20 @@ export class QueryCore {
 
     async getBingRelatedTerms(query: string): Promise<string[]> {
         try {
-            const request: AxiosRequestConfig = {
-                url: `https://api.bing.com/osjson.aspx?query=${encodeURIComponent(query)}`,
+            const request: HttpRequestConfig = {
+                url: URLs.queryEngine.bingRelated(query),
                 method: 'GET',
-                headers: {
-                    ...(this.bot.fingerprint?.headers ?? {})
-                }
+                headers: { ...(this.bot.fingerprint?.headers ?? {}) }
             }
 
-            const response = await this.bot.axios.request(request, this.bot.config.proxy.queryEngine)
+            const response = await this.bot.http.request<unknown[]>(request, this.bot.config.proxy.queryEngine)
             const related = response.data?.[1]
-            const out = Array.isArray(related) ? related : []
-
-            if (!out.length) {
-                this.bot.logger.debug(
-                    this.bot.isMobile,
-                    'SEARCH-BING-RELATED',
-                    `empty related terms | query="${query}"`
-                )
-            }
-
-            return out
+            return Array.isArray(related) ? related : []
         } catch (error) {
             this.bot.logger.debug(
                 this.bot.isMobile,
                 'SEARCH-BING-RELATED',
-                `request failed | query="${query}" | error=${
-                    error instanceof Error ? `${error.name}: ${error.message}\n${error.stack ?? ''}` : String(error)
-                }`
-            )
-            return []
-        }
-    }
-
-    async getBingTrendingTopics(langCode = 'en'): Promise<string[]> {
-        try {
-            const request: AxiosRequestConfig = {
-                url: `https://www.bing.com/api/v7/news/trendingtopics?appid=91B36E34F9D1B900E54E85A77CF11FB3BE5279E6&cc=xl&setlang=${langCode}`,
-                method: 'GET',
-                headers: {
-                    Authorization: `Bearer ${this.bot.accessToken}`,
-                    'User-Agent':
-                        'Bing/32.5.431027001 (com.microsoft.bing; build:431027001; iOS 17.6.1) Alamofire/5.10.2',
-                    'Content-Type': 'application/json',
-                    'X-Rewards-Country': this.bot.userData.geoLocale,
-                    'X-Rewards-Language': 'en',
-                    'X-Rewards-ismobile': 'true'
-                }
-            }
-
-            const response = await this.bot.axios.request(request, this.bot.config.proxy.queryEngine)
-            const topics =
-                response.data.value?.map(
-                    (x: { query: { text: string }; name: string }) => x.query?.text?.trim() || x.name.trim()
-                ) ?? []
-
-            if (!topics.length) {
-                this.bot.logger.debug(
-                    this.bot.isMobile,
-                    'SEARCH-BING-TRENDING',
-                    `empty trending topics | lang=${langCode}`
-                )
-            }
-
-            return topics
-        } catch (error) {
-            this.bot.logger.debug(
-                this.bot.isMobile,
-                'SEARCH-BING-TRENDING',
-                `request failed | lang=${langCode} | error=${
-                    error instanceof Error ? `${error.name}: ${error.message}\n${error.stack ?? ''}` : String(error)
-                }`
+                `Request failed | query="${query}" | ${error instanceof Error ? error.message : String(error)}`
             )
             return []
         }
@@ -389,143 +271,191 @@ export class QueryCore {
     async getWikipediaTrending(langCode = 'en'): Promise<string[]> {
         try {
             const date = new Date(Date.now() - 24 * 60 * 60 * 1000)
-            const yyyy = date.getUTCFullYear()
-            const mm = String(date.getUTCMonth() + 1).padStart(2, '0')
-            const dd = String(date.getUTCDate()).padStart(2, '0')
+            const year = date.getUTCFullYear()
+            const month = String(date.getUTCMonth() + 1).padStart(2, '0')
+            const day = String(date.getUTCDate()).padStart(2, '0')
 
-            const request: AxiosRequestConfig = {
-                url: `https://wikimedia.org/api/rest_v1/metrics/pageviews/top/${langCode}.wikipedia/all-access/${yyyy}/${mm}/${dd}`,
+            const request: HttpRequestConfig = {
+                url: URLs.queryEngine.wikipediaTop(langCode, year, month, day),
                 method: 'GET',
-                headers: {
-                    ...(this.bot.fingerprint?.headers ?? {})
-                }
+                headers: { ...(this.bot.fingerprint?.headers ?? {}) }
             }
 
-            const response = await this.bot.axios.request(request, this.bot.config.proxy.queryEngine)
+            const response = await this.bot.http.request(request, this.bot.config.proxy.queryEngine)
             const articles = (response.data as WikipediaTopResponse).items?.[0]?.articles ?? []
 
-            const out = articles.slice(0, 50).map(a => a.article.replace(/_/g, ' '))
-
-            if (!out.length) {
-                this.bot.logger.debug(
-                    this.bot.isMobile,
-                    'SEARCH-WIKIPEDIA-TRENDING',
-                    `empty wikipedia top | lang=${langCode}`
-                )
-            }
-
-            return out
+            return articles.slice(0, 50).map(a => a.article.replace(/_/g, ' '))
         } catch (error) {
             this.bot.logger.debug(
                 this.bot.isMobile,
                 'SEARCH-WIKIPEDIA-TRENDING',
-                `request failed | lang=${langCode} | error=${
-                    error instanceof Error ? `${error.name}: ${error.message}\n${error.stack ?? ''}` : String(error)
-                }`
+                `Request failed | lang=${langCode} | ${error instanceof Error ? error.message : String(error)}`
             )
             return []
         }
     }
 
     async getRedditTopics(subreddit = 'popular'): Promise<string[]> {
+        const safe = subreddit.replace(/[^a-zA-Z0-9_+]/g, '')
         try {
-            const safe = subreddit.replace(/[^a-zA-Z0-9_+]/g, '')
-            const request: AxiosRequestConfig = {
-                url: `https://www.reddit.com/r/${safe}.json?limit=50`,
+            const request: HttpRequestConfig = {
+                url: URLs.queryEngine.reddit(safe),
                 method: 'GET',
-                headers: {
-                    ...(this.bot.fingerprint?.headers ?? {})
-                }
+                headers: { ...(this.bot.fingerprint?.headers ?? {}) }
             }
 
-            const response = await this.bot.axios.request(request, this.bot.config.proxy.queryEngine)
+            const response = await this.bot.http.request(request, this.bot.config.proxy.queryEngine)
             const posts = (response.data as RedditListing).data?.children ?? []
 
-            const out = posts.filter(p => !p.data.over_18).map(p => p.data.title)
-
-            if (!out.length) {
-                this.bot.logger.debug(
-                    this.bot.isMobile,
-                    'SEARCH-REDDIT-TRENDING',
-                    `empty reddit listing | subreddit=${safe}`
-                )
-            }
-
-            return out
+            return posts.filter(p => !p.data.over_18).map(p => p.data.title)
         } catch (error) {
             this.bot.logger.debug(
                 this.bot.isMobile,
                 'SEARCH-REDDIT',
-                `request failed | subreddit=${subreddit} | error=${
-                    error instanceof Error ? `${error.name}: ${error.message}\n${error.stack ?? ''}` : String(error)
-                }`
+                `Request failed | subreddit=${safe} | ${error instanceof Error ? error.message : String(error)}`
             )
             return []
         }
+    }
+
+    async getHackerNewsTopics(): Promise<string[]> {
+        try {
+            const request: HttpRequestConfig = {
+                url: URLs.queryEngine.hackerNews,
+                method: 'GET',
+                headers: { ...(this.bot.fingerprint?.headers ?? {}) }
+            }
+
+            const response = await this.bot.http.request<HackerNewsResponse>(request, this.bot.config.proxy.queryEngine)
+            const hits = response.data?.hits ?? []
+
+            return hits.map(h => (h.title ?? '').replace(/^(?:Show|Ask)\s+HN:\s*/i, '').trim()).filter(Boolean)
+        } catch (error) {
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                'SEARCH-HACKERNEWS',
+                `Request failed | ${error instanceof Error ? error.message : String(error)}`
+            )
+            return []
+        }
+    }
+
+    async getWikipediaRandom(langCode = 'en'): Promise<string[]> {
+        const lang = (langCode || 'en').split('-')[0] || 'en'
+        try {
+            const request: HttpRequestConfig = {
+                url: URLs.queryEngine.wikipediaRandom(lang),
+                method: 'GET',
+                headers: { ...(this.bot.fingerprint?.headers ?? {}) }
+            }
+
+            const response = await this.bot.http.request<WikipediaRandomResponse>(
+                request,
+                this.bot.config.proxy.queryEngine
+            )
+            const pages = response.data?.query?.random ?? []
+
+            return pages.map(p => p.title.trim()).filter(Boolean)
+        } catch (error) {
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                'SEARCH-WIKIPEDIA-RANDOM',
+                `Request failed | lang=${lang} | ${error instanceof Error ? error.message : String(error)}`
+            )
+            return []
+        }
+    }
+
+    async getRssTopics(selectors: string[]): Promise<string[]> {
+        const urls = this.resolveRssUrls(selectors)
+        if (!urls.length) return []
+
+        const lists = await Promise.all(urls.map(url => this.fetchRssTitles(url).catch(() => [])))
+        return lists.flat()
+    }
+
+    private resolveRssUrls(selectors: string[]): string[] {
+        const urls = new Set<string>()
+
+        for (const selector of selectors) {
+            const [, site, endpoint] = selector.split('.')
+
+            if (!site) {
+                for (const feeds of Object.values(RSS_FEEDS)) {
+                    for (const url of Object.values(feeds)) urls.add(url)
+                }
+                continue
+            }
+
+            const feeds = RSS_FEEDS[site]
+            if (!feeds) {
+                this.bot.logger.warn(this.bot.isMobile, 'SEARCH-RSS', `Unknown RSS site "${site}" in "${selector}"`)
+                continue
+            }
+
+            if (!endpoint) {
+                for (const url of Object.values(feeds)) urls.add(url)
+                continue
+            }
+
+            const url = feeds[endpoint]
+            if (url) urls.add(url)
+            else this.bot.logger.warn(this.bot.isMobile, 'SEARCH-RSS', `Unknown RSS feed "${site}.${endpoint}"`)
+        }
+
+        return [...urls]
+    }
+
+    async fetchRssTitles(url: string): Promise<string[]> {
+        try {
+            const request: HttpRequestConfig = {
+                url,
+                method: 'GET',
+                headers: { ...(this.bot.fingerprint?.headers ?? {}) }
+            }
+
+            const response = await this.bot.http.request<string>(request, this.bot.config.proxy.queryEngine)
+            const xml = typeof response.data === 'string' ? response.data : String(response.data ?? '')
+            return this.parseRssTitles(xml)
+        } catch (error) {
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                'SEARCH-RSS',
+                `Feed failed | ${url} | ${error instanceof Error ? error.message : String(error)}`
+            )
+            return []
+        }
+    }
+
+    private parseRssTitles(xml: string): string[] {
+        if (!xml) return []
+
+        let doc: RssDocument
+        try {
+            doc = new XMLParser({ ignoreAttributes: true, htmlEntities: true, parseTagValue: false }).parse(xml)
+        } catch {
+            return []
+        }
+
+        const entries = [
+            ...toArray(doc?.rss?.channel?.item),
+            ...toArray(doc?.['rdf:RDF']?.item),
+            ...toArray(doc?.feed?.entry)
+        ]
+
+        return entries.map(entry => stripHtml(readTitle(entry?.title)).trim()).filter(Boolean)
     }
 
     getLocalQueryList(): string[] {
         try {
             const file = path.join(__dirname, './search-queries.json')
             const queries = JSON.parse(fs.readFileSync(file, 'utf8')) as string[]
-            const out = Array.isArray(queries) ? queries : []
-
-            this.bot.logger.debug(
-                this.bot.isMobile,
-                'SEARCH-LOCAL-QUERY-LIST',
-                'local queries loaded | file=search-queries.json'
-            )
-
-            if (!out.length) {
-                this.bot.logger.debug(
-                    this.bot.isMobile,
-                    'SEARCH-LOCAL-QUERY-LIST',
-                    'search-queries.json parsed but empty or invalid'
-                )
-            }
-
-            return out
+            return Array.isArray(queries) ? queries : []
         } catch (error) {
             this.bot.logger.debug(
                 this.bot.isMobile,
                 'SEARCH-LOCAL-QUERY-LIST',
-                `read/parse failed | error=${
-                    error instanceof Error ? `${error.name}: ${error.message}\n${error.stack ?? ''}` : String(error)
-                }`
-            )
-            return []
-        }
-    }
-
-    private async getCustomCNTrends(): Promise<string[]> {
-        try {
-            this.bot.logger.debug(this.bot.isMobile, 'SEARCH-CN-TRENDS', 'Generating search queries from custom CN source')
-
-            const request: AxiosRequestConfig = {
-                url: 'http://192.168.31.214:6688/douyin?limit=100&cache=false',
-                method: 'GET',
-                headers: {
-                    'Content-Type': 'application/json'
-                }
-            }
-
-            const response = await this.bot.axios.request(request, this.bot.config.proxy.queryEngine)
-            const data = response.data as CNTrends
-
-            if (data.code !== 200) {
-                this.bot.logger.warn(this.bot.isMobile, 'SEARCH-CN-TRENDS', `Custom CN source returned non-200 code: ${data.code}`)
-                return []
-            }
-
-            const topics = data.data?.map(topic => topic.title.toLowerCase()) ?? []
-            this.bot.logger.debug(this.bot.isMobile, 'SEARCH-CN-TRENDS', `Got ${topics.length} topics from custom CN source`)
-
-            return topics
-        } catch (error) {
-            this.bot.logger.error(
-                this.bot.isMobile,
-                'SEARCH-CN-TRENDS',
-                `An error occurred: ${error instanceof Error ? `${error.name}: ${error.message}` : String(error)}`
+                `Failed reading search-queries.json | ${error instanceof Error ? error.message : String(error)}`
             )
             return []
         }

@@ -21,7 +21,8 @@ export default tseslint.config(
         rules: {
             '@typescript-eslint/no-explicit-any': ['warn', { fixToUnknown: false }],
             'prefer-arrow-callback': 'error',
-            'no-empty': 'off'
+            'no-empty': 'off',
+            'preserve-caught-error': 'off'
         }
     },
     // Must come last: disables ESLint rules that conflict with Prettier formatting

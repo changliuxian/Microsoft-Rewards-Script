@@ -2,7 +2,7 @@ name: Release and Docker Push
 
 on:
     push:
-        branches: [v3]
+        branches: [v4]
         paths:
             - package.json
     workflow_dispatch:

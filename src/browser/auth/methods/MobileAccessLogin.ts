@@ -1,3 +1,4 @@
+import { URLs } from '../../../constants/urls'
 import type { Page } from 'patchright'
 import { randomBytes } from 'crypto'
 import { URLSearchParams } from 'url'
@@ -6,45 +7,15 @@ import type { MicrosoftRewardsBot } from '../../../index'
 
 export class MobileAccessLogin {
     private clientId = '0000000040170455'
-    private authUrl = 'https://login.live.com/oauth20_authorize.srf'
-    private redirectUrl = 'https://login.live.com/oauth20_desktop.srf'
-    private tokenUrl = 'https://login.microsoftonline.com/consumers/oauth2/v2.0/token'
+    private authUrl = URLs.auth.oauthAuthorize
+    private redirectUrl = URLs.auth.oauthRedirect
+    private tokenUrl = URLs.auth.oauthToken
     private scope = 'service::prod.rewardsplatform.microsoft.com::MBI_SSL'
-    private maxTimeout = 180_000 // 3min
-
-    // Selectors for handling Passkey prompt during OAuth
-    private readonly selectors = {
-        secondaryButton: 'button[data-testid="secondaryButton"]',
-        passKeyError: '[data-testid="registrationImg"]',
-        passKeyVideo: '[data-testid="biometricVideo"]'
-    } as const
 
     constructor(
         private bot: MicrosoftRewardsBot,
         private page: Page
     ) {}
-
-    private async checkSelector(selector: string): Promise<boolean> {
-        return this.page
-            .waitForSelector(selector, { state: 'visible', timeout: 200 })
-            .then(() => true)
-            .catch(() => false)
-    }
-
-    private async handlePasskeyPrompt(): Promise<void> {
-        try {
-            // Handle Passkey prompt - click secondary button to skip
-            const hasPasskeyError = await this.checkSelector(this.selectors.passKeyError)
-            const hasPasskeyVideo = await this.checkSelector(this.selectors.passKeyVideo)
-            if (hasPasskeyError || hasPasskeyVideo) {
-                this.bot.logger.info(this.bot.isMobile, 'LOGIN-APP', 'Found Passkey prompt on OAuth page, skipping')
-                await this.bot.browser.utils.ghostClick(this.page, this.selectors.secondaryButton)
-                await this.page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {})
-            }
-        } catch {
-            // Ignore errors in prompt handling
-        }
-    }
 
     async get(email: string): Promise<string> {
         try {
@@ -63,69 +34,40 @@ export class MobileAccessLogin {
                 `Auth URL constructed: ${authorizeUrl.origin}${authorizeUrl.pathname}`
             )
 
-            await this.bot.browser.utils.disableFido(this.page)
+            this.bot.logger.debug(this.bot.isMobile, 'LOGIN-APP', 'Resolving mobile OAuth code via request')
 
-            this.bot.logger.debug(this.bot.isMobile, 'LOGIN-APP', 'Navigating to OAuth authorize URL')
+            let code = ''
+            try {
+                const resp = await this.page.request.get(authorizeUrl.href, { maxRedirects: 20 })
+                const finalUrl = new URL(resp.url())
 
-            await this.page.goto(authorizeUrl.href).catch(err => {
                 this.bot.logger.debug(
                     this.bot.isMobile,
                     'LOGIN-APP',
-                    `page.goto() failed: ${err instanceof Error ? err.message : String(err)}`
+                    `OAuth redirect resolved → ${finalUrl.origin}${finalUrl.pathname} (status ${resp.status()})`
                 )
-            })
 
-            this.bot.logger.info(this.bot.isMobile, 'LOGIN-APP', 'Waiting for mobile OAuth code...')
-
-            const start = Date.now()
-            let code = ''
-            let lastUrl = ''
-
-            while (Date.now() - start < this.maxTimeout) {
-                const currentUrl = this.page.url()
-
-                // Log only when URL changes (high signal, no spam)
-                if (currentUrl !== lastUrl) {
-                    this.bot.logger.debug(this.bot.isMobile, 'LOGIN-APP', `OAuth poll URL changed → ${currentUrl}`)
-                    lastUrl = currentUrl
+                if (finalUrl.pathname === '/oauth20_desktop.srf') {
+                    code = finalUrl.searchParams.get('code') || ''
                 }
-
-                try {
-                    const url = new URL(currentUrl)
-
-                    if (url.hostname === 'login.live.com' && url.pathname === '/oauth20_desktop.srf') {
-                        code = url.searchParams.get('code') || ''
-
-                        if (code) {
-                            this.bot.logger.debug(this.bot.isMobile, 'LOGIN-APP', 'OAuth code detected in redirect URL')
-                            break
-                        }
-                    }
-
-                    // Handle Passkey prompt if it appears
-                    await this.handlePasskeyPrompt()
-                } catch (err) {
-                    this.bot.logger.debug(
-                        this.bot.isMobile,
-                        'LOGIN-APP',
-                        `Invalid URL while polling: ${String(currentUrl)}`
-                    )
-                }
-
-                await this.bot.utils.wait(1000)
+            } catch (err) {
+                this.bot.logger.debug(
+                    this.bot.isMobile,
+                    'LOGIN-APP',
+                    `OAuth code request failed: ${err instanceof Error ? err.message : String(err)}`
+                )
             }
 
             if (!code) {
                 this.bot.logger.warn(
                     this.bot.isMobile,
                     'LOGIN-APP',
-                    `Timed out waiting for OAuth code after ${Math.round((Date.now() - start) / 1000)}s`
+                    'Could not resolve mobile OAuth code - app activities will be skipped this run'
                 )
-
-                this.bot.logger.debug(this.bot.isMobile, 'LOGIN-APP', `Final page URL: ${this.page.url()}`)
-
                 return ''
             }
+
+            this.bot.logger.debug(this.bot.isMobile, 'LOGIN-APP', 'OAuth code resolved, exchanging for access token')
 
             const data = new URLSearchParams()
             data.append('grant_type', 'authorization_code')
@@ -133,16 +75,14 @@ export class MobileAccessLogin {
             data.append('code', code)
             data.append('redirect_uri', this.redirectUrl)
 
-            this.bot.logger.debug(this.bot.isMobile, 'LOGIN-APP', 'Exchanging OAuth code for access token')
-
-            const response = await this.bot.axios.request({
+            const response = await this.bot.http.request<{ access_token?: string }>({
                 url: this.tokenUrl,
                 method: 'POST',
                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                 data: data.toString()
             })
 
-            const token = (response?.data?.access_token as string) ?? ''
+            const token = response?.data?.access_token ?? ''
 
             if (!token) {
                 this.bot.logger.warn(this.bot.isMobile, 'LOGIN-APP', 'No access_token in token response')
@@ -163,9 +103,6 @@ export class MobileAccessLogin {
                 `MobileAccess error: ${error instanceof Error ? error.stack || error.message : String(error)}`
             )
             return ''
-        } finally {
-            this.bot.logger.debug(this.bot.isMobile, 'LOGIN-APP', 'Returning to base URL')
-            await this.page.goto(this.bot.config.baseURL, { timeout: 10000 }).catch(() => {})
         }
     }
 }
