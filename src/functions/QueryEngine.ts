@@ -477,7 +477,7 @@ export class QueryCore {
             this.bot.logger.debug(this.bot.isMobile, 'SEARCH-CN-TRENDS', 'Generating search queries from custom CN source')
 
             const request: HttpRequestConfig = {
-                url: 'https://news.zpa666.top/api/douyin?limit=100&cache=false',
+                url: 'http://192.168.31.214:6688/api/douyin?limit=100&cache=false',
                 method: 'GET',
                 headers: {
                     'Content-Type': 'application/json'
