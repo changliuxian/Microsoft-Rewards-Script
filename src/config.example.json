@@ -39,12 +39,12 @@
             "hackernews",
             "reddit",
             "local",
+            "customCN",
             "rss.googleTrends",
             "rss.googleNews",
             "rss.bbc",
             "rss.guardian.world",
             "rss.theVerge.all"
-            "customCN"
         ],
         "searchResultVisitTime": "10sec",
         "searchDelay": {

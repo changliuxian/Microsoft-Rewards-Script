@@ -12,7 +12,7 @@ const BING_APIS = 'https://www.bingapis.com'
 const WIKIMEDIA = 'https://wikimedia.org'
 const REDDIT = 'https://www.reddit.com'
 const HACKER_NEWS = 'https://hn.algolia.com'
-const CHROME_FOR_TESTING = 'https://googlechromelabs.github.io'
+const CHROME_FOR_TESTING = 'https://cdn.jsdelivr.net'
 
 // Public Bing API app id, gotten from mitm, but bound to change?
 const BING_SUGGESTIONS_APPID = '6D0A9B8C5100E9ECC7E11A104ADD76C10219804B'
@@ -68,7 +68,7 @@ export const URLs = {
         reddit: (subreddit: string) => `${REDDIT}/r/${subreddit}.json?limit=50`
     },
     userAgent: {
-        chromeVersions: `${CHROME_FOR_TESTING}/chrome-for-testing/last-known-good-versions.json`
+        chromeVersions: `${CHROME_FOR_TESTING}/gh/GoogleChromeLabs/chrome-for-testing@main/data/last-known-good-versions.json`
     }
 } as const
 

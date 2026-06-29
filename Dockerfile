@@ -11,7 +11,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=0
 COPY package.json package-lock.json tsconfig.json ./
 
 # Install all dependencies required to build the script
-RUN npm ci --ignore-scripts
+RUN npm ci --ignore-scripts --registry=https://registry.npmmirror.com
 
 # Copy source and build
 COPY . .
@@ -19,7 +19,7 @@ RUN npm run build
 
 # Remove build dependencies, and reinstall only runtime dependencies
 RUN rm -rf node_modules \
-    && npm ci --omit=dev --ignore-scripts \
+    && npm ci --omit=dev --ignore-scripts --registry=https://registry.npmmirror.com \
     && npm cache clean --force
 
 # Install Chromium Headless Shell, and cleanup
