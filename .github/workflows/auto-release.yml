@@ -2,7 +2,7 @@ name: Release and Docker Push
 
 on:
     push:
-        branches: [v4]
+        branches: ['v3', 'v4']
         paths:
             - package.json
     workflow_dispatch:
@@ -66,6 +66,7 @@ jobs:
               uses: softprops/action-gh-release@v2
               with:
                   tag_name: v${{ steps.version.outputs.current }}
+                  target_commitish: ${{ github.sha }}
                   name: v${{ steps.version.outputs.current }}
                   generate_release_notes: true
 
@@ -105,6 +106,27 @@ jobs:
                   echo "LOG: Docker image already exists for version ${{ steps.version.outputs.current }}. Nothing to do."
                   exit 0
 
+            - name: Compute image tags
+              if: steps.imgcheck.outputs.exists != 'true'
+              id: tags
+              run: |
+                  set -euo pipefail
+                  IMAGE="${{ env.REGISTRY }}/${{ steps.image.outputs.name }}"
+                  VER="${{ steps.version.outputs.current }}"
+                  MAJOR="${VER%%.*}"
+
+                  # Always tag the exact version and the moving major tag (e.g. :3.1.7 and :3)
+                  TAGS="$IMAGE:$VER"$'\n'"$IMAGE:$MAJOR"
+
+                  # Only the current line (v4) moves :latest
+                  if [ "${{ github.ref_name }}" = "v4" ]; then
+                    TAGS="$TAGS"$'\n'"$IMAGE:latest"
+                  fi
+
+                  { echo "list<<EOF"; echo "$TAGS"; echo "EOF"; } >> "$GITHUB_OUTPUT"
+                  echo "LOG: Tags:"
+                  echo "$TAGS"
+
             - name: Set up QEMU
               if: steps.imgcheck.outputs.exists != 'true'
               uses: docker/setup-qemu-action@v3
@@ -120,8 +142,6 @@ jobs:
                   context: .
                   push: true
                   platforms: linux/amd64,linux/arm64
-                  tags: |
-                      ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}:${{ steps.version.outputs.current }}
-                      ${{ env.REGISTRY }}/${{ steps.image.outputs.name }}:latest
-                  cache-from: type=gha
-                  cache-to: type=gha,mode=max
+                  tags: ${{ steps.tags.outputs.list }}
+                  cache-from: type=gha,scope=${{ github.ref_name }}
+                  cache-to: type=gha,scope=${{ github.ref_name }},mode=max
