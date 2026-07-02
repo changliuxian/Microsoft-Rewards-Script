@@ -70,12 +70,24 @@ export class QueryCore {
         } = options
 
         if (geoLocale === 'CN') {
-            sourceOrder = ['customCN', 'local']
             this.bot.logger.debug(
                 this.bot.isMobile,
                 'QUERY-MANAGER',
-                `CN geoLocale detected, overriding sourceOrder to ${sourceOrder.join(',')}`
+                'CN geoLocale detected, using customCN with local fallback'
             )
+
+            // CN 地区优先从 customCN 获取，仅当完全失败时才 fallback 到 local
+            const cnTopics = await this.getCustomCNTrends().catch(() => [] as string[])
+            if (cnTopics.length > 0) {
+                return this.finalizeQueries(cnTopics, related, langCode, shuffle)
+            }
+
+            this.bot.logger.warn(
+                this.bot.isMobile,
+                'QUERY-MANAGER',
+                'customCN returned no results, falling back to local query list'
+            )
+            sourceOrder = ['local']
         }
 
         try {
@@ -118,25 +130,7 @@ export class QueryCore {
             }
 
             const baseTopics = this.normalizeAndDedupe(topicLists.flat())
-            if (!baseTopics.length) {
-                this.bot.logger.warn(this.bot.isMobile, 'QUERY-MANAGER', 'No topics returned by any source')
-                return []
-            }
-
-            const clusters = related ? await this.buildRelatedClusters(baseTopics, langCode) : baseTopics.map(t => [t])
-            this.bot.utils.shuffleArray(clusters)
-
-            let finalQueries = clusters.flat()
-            if (shuffle) this.bot.utils.shuffleArray(finalQueries)
-
-            finalQueries = this.normalizeAndDedupe(finalQueries)
-            this.bot.logger.debug(
-                this.bot.isMobile,
-                'QUERY-MANAGER',
-                `Built query pool | base=${baseTopics.length} | final=${finalQueries.length} | related=${related}`
-            )
-
-            return finalQueries
+            return this.finalizeQueries(baseTopics, related, langCode, shuffle)
         } catch (error) {
             this.bot.logger.error(
                 this.bot.isMobile,
@@ -145,6 +139,33 @@ export class QueryCore {
             )
             return []
         }
+    }
+
+    private async finalizeQueries(
+        baseTopics: string[],
+        related: boolean,
+        langCode: string,
+        shuffle: boolean
+    ): Promise<string[]> {
+        if (!baseTopics.length) {
+            this.bot.logger.warn(this.bot.isMobile, 'QUERY-MANAGER', 'No topics returned by any source')
+            return []
+        }
+
+        const clusters = related ? await this.buildRelatedClusters(baseTopics, langCode) : baseTopics.map(t => [t])
+        this.bot.utils.shuffleArray(clusters)
+
+        let finalQueries = clusters.flat()
+        if (shuffle) this.bot.utils.shuffleArray(finalQueries)
+
+        finalQueries = this.normalizeAndDedupe(finalQueries)
+        this.bot.logger.debug(
+            this.bot.isMobile,
+            'QUERY-MANAGER',
+            `Built query pool | base=${baseTopics.length} | final=${finalQueries.length} | related=${related}`
+        )
+
+        return finalQueries
     }
 
     private async buildRelatedClusters(baseTopics: string[], langCode: string): Promise<string[][]> {
