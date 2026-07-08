@@ -11,6 +11,7 @@ import { ClaimBonusPoints } from './activities/api/ClaimBonusPoints'
 import { EnsureStreakProtection } from './activities/api/EnsureStreakProtection'
 import { ClaimReward } from './activities/api/ClaimReward'
 import { ActivateSearchPerk } from './activities/api/ActivateSearchPerk'
+import { VisualSearch } from './activities/api/VisualSearch'
 
 // Browser
 import { Search as BrowserSearch } from './activities/browser/Search'
@@ -79,6 +80,11 @@ export default class Activities {
     doActivateSearchPerk = async (data: DashboardData): Promise<void> => {
         const activateSearchPerk = new ActivateSearchPerk(this.bot)
         await activateSearchPerk.activate(data)
+    }
+    
+    doVisualSearch = async (): Promise<number> => {
+        const visualSearch = new VisualSearch(this.bot)
+        return await visualSearch.doVisualSearch()
     }
 
     // App

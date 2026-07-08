@@ -14,6 +14,9 @@ import type { AppUserData } from '../interface/AppUserData'
 import type { AppEarnablePoints, BrowserEarnablePoints, MissingSearchPoints } from '../interface/Points'
 import type { AppDashboardData } from '../interface/AppDashBoardData'
 
+// Bing-hosted image used to seed the daily visual search. /images/kblob fetches it (Can be changed)
+const VISUAL_SEARCH_IMAGE_URL = 'https://th.bing.com/th?id=OMR.VisualSearch.VNext.BackgroundImage.png&pid=Rewards'
+
 export default class BrowserFunc {
     private bot: MicrosoftRewardsBot
 
@@ -636,6 +639,184 @@ export default class BrowserFunc {
         return { ig, ...parsed, gained }
     }
 
+    async reportVisualSearchActivity(visual: { bcid: string; query: string; serpUrl: string }): Promise<{
+        ig: string | null
+        balance: number | null
+        previousBalance: number | null
+        gained: number | null
+        searchPointsEarned: number | null
+        searchPointsLimit: number | null
+    }> {
+        const { bcid, query, serpUrl } = visual
+
+        const jar = this.getBingJar()
+
+        const base = { ...(this.bot.fingerprint?.headers ?? {}) }
+        delete base['Cookie']
+        delete base['cookie']
+
+        const empty = {
+            ig: null,
+            balance: null,
+            previousBalance: null,
+            searchPointsEarned: null,
+            searchPointsLimit: null
+        }
+
+        const searchRes = await this.bot.http.request({
+            url: serpUrl,
+            method: 'GET',
+            headers: {
+                ...base,
+                Cookie: this.jarToHeader(jar),
+                Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Sec-Fetch-User': '?1',
+                'Upgrade-Insecure-Requests': '1'
+            }
+        })
+        this.mergeSetCookies(jar, searchRes.headers?.['set-cookie'] as string[] | string | undefined)
+
+        const ig =
+            typeof searchRes.data === 'string'
+                ? ((searchRes.data.match(/\bIG:"([A-F0-9]{32})"/i) ??
+                      searchRes.data.match(/[?&]IG=([A-F0-9]{32})\b/i))?.[1] ?? null)
+                : null
+        if (!ig) {
+            this.bot.logger.warn(
+                this.bot.isMobile,
+                'VISUAL-SEARCH-REPORT',
+                `No IG for "${query}" - visual SERP not served as expected`
+            )
+            return { ...empty, gained: null }
+        }
+
+        const params = new URLSearchParams({
+            IG: ig,
+            IID: 'SERP.5064',
+            q: query,
+            bcid,
+            FORM: 'SBIHMP',
+            hq: '1',
+            ajaxreq: '1'
+        })
+        const reportUrl = `${URLs.bing.origin}/rewardsapp/reportActivity?${params.toString()}`
+
+        const reportRes = await this.bot.http.request({
+            url: reportUrl,
+            method: 'POST',
+            headers: {
+                ...base,
+                Cookie: this.jarToHeader(jar),
+                Accept: '*/*',
+                'Content-Type': 'application/x-www-form-urlencoded',
+                Referer: serpUrl,
+                Origin: URLs.bing.origin,
+                'Sec-Fetch-Dest': 'empty',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Site': 'same-origin',
+                'X-Requested-With': 'XMLHttpRequest'
+            },
+            data: `url=${encodeURIComponent(serpUrl)}&V=web`
+        })
+        this.mergeSetCookies(jar, reportRes.headers?.['set-cookie'] as string[] | string | undefined)
+
+        const parsed = this.parseReportResponse(reportRes.data)
+        const gained =
+            parsed.balance != null && parsed.previousBalance != null ? parsed.balance - parsed.previousBalance : null
+
+        this.bot.logger.debug(
+            this.bot.isMobile,
+            'VISUAL-SEARCH-REPORT',
+            `Reported "${query}" | ig=${ig} | bcid=${bcid.slice(0, 12)} | gained=${gained ?? 'n/a'} | balance=${parsed.balance ?? 'n/a'} | searchPts=${parsed.searchPointsEarned ?? 'n/a'}/${parsed.searchPointsLimit ?? 'n/a'}`
+        )
+
+        return { ig, ...parsed, gained }
+    }
+
+    async acquireVisualSearch(
+        imageUrl: string = VISUAL_SEARCH_IMAGE_URL
+    ): Promise<{ bcid: string; query: string; serpUrl: string } | null> {
+        try {
+            const jar = this.getBingJar()
+            const base = { ...(this.bot.fingerprint?.headers ?? {}) }
+            delete base['Cookie']
+            delete base['cookie']
+
+            const enc = encodeURIComponent(imageUrl)
+            const url =
+                `${URLs.bing.origin}/images/kblob` + `?iss=sbi&form=SBIHMP&sbisrc=UrlPaste&vsimg=${enc}&imgurl=${enc}`
+
+            const boundary = `----WebKitFormBoundary${randomBytes(8).toString('hex')}`
+            const body = this.buildMultipart(boundary, [
+                { name: 'cbir', value: 'sbi' },
+                { name: 'imageBin', value: '' },
+                { name: 'imgurl', value: '' }
+            ])
+
+            const res = await this.bot.http.request({
+                url,
+                method: 'POST',
+                headers: {
+                    ...base,
+                    Cookie: this.jarToHeader(jar),
+                    Accept: 'application/json',
+                    'Content-Type': `multipart/form-data; boundary=${boundary}`,
+                    Referer: `${URLs.bing.origin}/visualsearch`,
+                    Origin: URLs.bing.origin,
+                    'Sec-Fetch-Dest': 'empty',
+                    'Sec-Fetch-Mode': 'cors',
+                    'Sec-Fetch-Site': 'same-origin'
+                },
+                data: body
+            })
+            this.mergeSetCookies(jar, res.headers?.['set-cookie'] as string[] | string | undefined)
+
+            const redirectUrl = this.parseKblobRedirect(res.data)
+            if (!redirectUrl) {
+                const dump = typeof res.data === 'string' ? res.data : JSON.stringify(res.data ?? '')
+                this.bot.logger.warn(
+                    this.bot.isMobile,
+                    'VISUAL-SEARCH-BCID',
+                    `kblob returned no redirectUrl | status=${res.status} - the endpoint/shape may have changed`
+                )
+                this.bot.logger.debug(this.bot.isMobile, 'VISUAL-SEARCH-BCID', `kblob response: ${dump.slice(0, 400)}`)
+                return null
+            }
+
+            const qs = new URLSearchParams(redirectUrl.split('?')[1] ?? '')
+            const bcid = qs.get('bcid')
+            if (!bcid) {
+                this.bot.logger.warn(this.bot.isMobile, 'VISUAL-SEARCH-BCID', `redirect had no bcid | ${redirectUrl}`)
+                return null
+            }
+
+            const query = qs.get('q') ?? ''
+            const serpUrl = `${URLs.bing.origin}${redirectUrl}`
+
+            this.bot.logger.info(
+                this.bot.isMobile,
+                'VISUAL-SEARCH-BCID',
+                `Acquired bcid=${bcid.slice(0, 14)} | q="${query}" | status=${res.status}`,
+                'green'
+            )
+            return { bcid, query, serpUrl }
+        } catch (error) {
+            this.bot.logger.warn(
+                this.bot.isMobile,
+                'VISUAL-SEARCH-BCID',
+                `Failed to acquire visual search | ${error instanceof Error ? error.message : String(error)}`
+            )
+            return null
+        }
+    }
+
+    resetHttpJars(): void {
+        this.bingJars.clear()
+    }
+
     private getBingJar(): Map<string, string> {
         const src = this.bot.isMobile ? this.bot.cookies.mobile : this.bot.cookies.desktop
         const key = `${src.find(c => c.name === '_U')?.value ?? ''}|${this.bot.isMobile}`
@@ -693,4 +874,34 @@ export default class BrowserFunc {
             return empty
         }
     }
+    
+    private buildMultipart(boundary: string, fields: { name: string; value: string }[]): Buffer {
+        const parts: Buffer[] = []
+        for (const f of fields) {
+            parts.push(
+                Buffer.from(
+                    `--${boundary}\r\nContent-Disposition: form-data; name="${f.name}"\r\n\r\n${f.value}\r\n`,
+                    'utf8'
+                )
+            )
+        }
+        parts.push(Buffer.from(`--${boundary}--\r\n`, 'utf8'))
+        return Buffer.concat(parts)
+    }
+
+    private parseKblobRedirect(data: unknown): string | null {
+        try {
+            const obj = typeof data === 'string' ? JSON.parse(data) : data
+            const url = (obj as { redirectUrl?: unknown })?.redirectUrl
+            if (typeof url === 'string' && url.includes('bcid=')) return url
+        } catch {}
+
+        if (typeof data === 'string') {
+            const m = data.match(/"redirectUrl"\s*:\s*"([^"]+)"/)
+            const raw = m?.[1]
+            if (raw && raw.includes('bcid=')) return raw.replace(/\\u002f/gi, '/').replace(/\\\//g, '/')
+        }
+        return null
+    }
 }
+

@@ -75,6 +75,7 @@ fi
 #      CONFIG_WORKER_DAILY_CHECKIN       → .workers.doDailyCheckIn
 #      CONFIG_WORKER_READ_TO_EARN        → .workers.doReadToEarn
 #      CONFIG_WORKER_ACTIVATE_SEARCH_PERK → .workers.doActivateSearchPerk
+#      CONFIG_WORKER_VISUAL_SEARCH       → .workers.doVisualSearch
 #
 #    Search settings:
 #      CONFIG_SEARCH_SCROLL_RANDOM       → .searchSettings.scrollRandomResults
@@ -240,6 +241,7 @@ _cfg "${CONFIG_WORKER_BONUS_SEARCHES:-}"         '.workers.doBonusSearches'     
 _cfg "${CONFIG_WORKER_DAILY_CHECKIN:-}"       '.workers.doDailyCheckIn'        bool
 _cfg "${CONFIG_WORKER_READ_TO_EARN:-}"        '.workers.doReadToEarn'          bool
 _cfg "${CONFIG_WORKER_ACTIVATE_SEARCH_PERK:-}" '.workers.doActivateSearchPerk'  bool
+_cfg "${CONFIG_WORKER_VISUAL_SEARCH:-}"       '.workers.doVisualSearch'        bool
 
 # Search settings
 _cfg "${CONFIG_SEARCH_SCROLL_RANDOM:-}"    '.searchSettings.scrollRandomResults'    bool

@@ -75,7 +75,7 @@ ACCOUNT_1_PASSWORD=your_password
 > [!WARNING]
 > Do **not** skip this step if you are running the script bare metal.
 
-- **Bare metal:**: Copy or rename `config.example.json` to `config.json` (in the project root) and customize your preferences.
+- **Bare metal:** Copy or rename `config.example.json` to `config.json` (in the project root) and customize your preferences.
 - **Docker:** A valid `config.json` is automatically created on first run and saved locally to `./config/`. You can optionally manually create a `config.json` (e.g., if you need to specify regex values) using the provided `config.example.json`
 
 > [!CAUTION]
@@ -100,20 +100,22 @@ ACCOUNT_1_PASSWORD=your_password
 ```
 
 - Review `compose.yaml` to adjust scheduling, timezone, and config options.
-    > [!NOTE]
-    > A valid `config.json` is auto-generated on first run using default values, and saved locally to `./config/`.
-    > Optionally, use `CONFIG_*` variables in the `environment:` section of the `compose.yaml` to customise your options (e.g., clusters, webhook, etc.).
-    > A full list of available options are in the [table below](#configuration-options).
-    > `CONFIG_*` variables are applied on every startup and always take precedence over `./config/config.json`.
+
+> [!NOTE]
+> A valid `config.json` is auto-generated on first run using default values, and saved locally to `./config/`.
+> Optionally, use `CONFIG_*` variables in the `environment:` section of the `compose.yaml` to customise your options (e.g., clusters, webhook, etc.).
+> A full list of available options are in the [table below](#configuration-options).
+> `CONFIG_*` variables are applied on every startup and always take precedence over `./config/config.json`.
 
 > [!TIP]
 > If a new image adds config options you're missing, a warning will appear in the container logs.
 > To update, delete `./config/config.json` and restart — a fresh one will be generated from the latest example, with your `compose.yaml` overrides re-applied.
 
 - Start the container: `docker compose up -d`
-    > [!TIP]
-    > Monitor logs with `docker logs microsoft-rewards-script`, useful for viewing passwordless login codes or diagnosing issues.
-    > You can also enable a webhook in `compose.yaml` for notifications.
+
+> [!TIP]
+> Monitor logs with `docker logs microsoft-rewards-script`, useful for viewing passwordless login codes or diagnosing issues.
+> You can also enable a webhook in `compose.yaml` for notifications.
 
 ---
 
@@ -159,6 +161,7 @@ Edit `config.json` to customize behavior, or set `CONFIG_*` environment variable
 | `workers.doDailyCheckIn`       | boolean | `true`  | Complete daily check-in                                                    | `CONFIG_WORKER_DAILY_CHECKIN`        |
 | `workers.doReadToEarn`         | boolean | `true`  | Complete Read-to-Earn                                                      | `CONFIG_WORKER_READ_TO_EARN`         |
 | `workers.doActivateSearchPerk` | boolean | `true`  | Activate the "search Nx more" perk when present (runs after the daily set) | `CONFIG_WORKER_ACTIVATE_SEARCH_PERK` |
+| `workers.doVisualSearch`       | boolean | `false` | Activate the visual-search streak and perform visual searches              | `CONFIG_WORKER_VISUAL_SEARCH`        |
 
 ### Activities
 

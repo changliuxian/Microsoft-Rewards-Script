@@ -69,7 +69,8 @@ export const ConfigSchema = z.object({
         doBonusSearches: z.boolean(),
         doDailyCheckIn: z.boolean(),
         doReadToEarn: z.boolean(),
-        doActivateSearchPerk: z.boolean()
+        doActivateSearchPerk: z.boolean(),
+        doVisualSearch: z.boolean().default(false)
     }),
     activities: z
         .object({
@@ -144,7 +145,8 @@ const defaultConfig: Config = {
         doBonusSearches: false,
         doDailyCheckIn: true,
         doReadToEarn: true,
-        doActivateSearchPerk: true
+        doActivateSearchPerk: true,
+        doVisualSearch: false
     },
     activities: {
         urlReward: true,

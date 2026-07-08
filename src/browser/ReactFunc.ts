@@ -383,7 +383,8 @@ export default class ReactFunc {
             )
 
             if (account.level === null && account.availablePoints === null) {
-                this.bot.logger.warn(
+                // Common error! Keep however for debugging!
+                this.bot.logger.debug(
                     this.bot.isMobile,
                     'REACT-PARSE',
                     'Account state empty - membership/header objects not found in payload'
@@ -553,27 +554,16 @@ export default class ReactFunc {
         const out: QuestChild[] = []
         const seen = new Set<string>()
 
-        const idRe = /"offerId":"([^"]*pcchild[^"]*)"/g
-        for (const questMatch of combined.matchAll(idRe)) {
-            const offerId = questMatch[1] as string
-            if (seen.has(offerId)) continue
+        for (const obj of this.extractObjects(combined, '"offerId"')) {
+            const offerId = obj.offerId as string | undefined
+            if (!offerId || !offerId.includes('pcchild') || seen.has(offerId)) continue
             seen.add(offerId)
 
-            const at = questMatch.index ?? 0
-            const childAt = combined.indexOf('"children"', at)
-            const windowEnd = childAt !== -1 && childAt - at < 1200 ? childAt : Math.min(at + 600, combined.length)
-            const region = combined.slice(at, windowEnd)
-
-            const hashMatch = region.match(/"hash":"([0-9a-f]{64})"/)
-            const hash = hashMatch?.[1] ?? null
-
-            const pointsMatch = region.match(/"points":(\d+)/)
-            const points = pointsMatch ? Number(pointsMatch[1]) : 0
-
-            const flag = (name: string): boolean => new RegExp(`"${name}":true`).test(region)
-            const isCompleted = flag('isCompleted')
-            const isLocked = flag('isLocked')
-            const isDisabled = flag('isDisabled')
+            const hash = (obj.hash as string | null) ?? null
+            const points = (obj.points as number) ?? (obj.pointProgressMax as number) ?? 0
+            const isCompleted = ((obj.isCompleted ?? obj.complete) as boolean | undefined) === true
+            const isLocked = (obj.isLocked as boolean | undefined) === true
+            const isDisabled = (obj.isDisabled as boolean | undefined) === true
 
             const reportable = !!hash && !isCompleted && !isLocked && !isDisabled
 

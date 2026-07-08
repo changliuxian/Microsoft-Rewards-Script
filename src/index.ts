@@ -428,8 +428,12 @@ export class MicrosoftRewardsBot {
         const accountEmail = account.email
         this.logger.info('main', 'FLOW', `Starting session for ${accountEmail}`)
 
+        // Drop cookies from previous account
+        this.browser.func.resetHttpJars()
+
         let mobileSession: BrowserSession | null = null
         let mobileContextClosed = false
+        let desktopSession: BrowserSession | null = null
 
         try {
             return await executionContext.run({ isMobile: true, account }, async () => {
@@ -487,33 +491,149 @@ export class MicrosoftRewardsBot {
                     } | App: ${appEarnable?.totalEarnablePoints ?? 0} | ${accountEmail} | locale: ${this.userData.geoLocale}`
                 )
 
-                if (this.config.ensureStreakProtection) {
-                    await this.activities.doEnsureStreakProtection()
-                }
-                if (this.config.workers.doDailySet) await this.workers.doDailySet(data)
-                if (this.config.workers.doActivateSearchPerk) await this.activities.doActivateSearchPerk(data)
-                if (this.config.workers.doMorePromotions) await this.workers.doMorePromotions(data)
-                if (this.config.workers.doDailyCheckIn) await this.activities.doDailyCheckIn()
-                if (this.config.workers.doAppPromotions) await this.workers.doAppPromotions(appData)
-                if (this.config.workers.doReadToEarn) await this.activities.doReadToEarn()
-                if (this.config.workers.doPunchCards) await this.punchcardManager.run(account, data)
+                const apiSearch = this.config.experimental.apiSearch
+                const apiSearchOnBing = this.config.experimental.apiSearchOnBing
+                const parallel = this.config.searchSettings.parallelSearching
+                const doBonus = this.config.workers.doBonusSearches
+                const doVisualSearch = this.config.workers.doVisualSearch
 
-                if (this.config.workers.doMobileSearch || this.config.workers.doDesktopSearch) {
-                    await this.searchManager.doSearches(account)
+                const fullApi = apiSearch && (apiSearchOnBing || !this.config.activities.searchOnBing)
+
+                let mobilePoints = 0
+                let desktopPoints = 0
+                let bonusPoints = 0
+
+                if (fullApi) {
+                    if (this.config.ensureStreakProtection) {
+                        await this.activities.doEnsureStreakProtection()
+                    }
+                    if (this.config.workers.doPunchCards) await this.punchcardManager.runMobile(data)
+                    if (this.config.workers.doActivateSearchPerk) await this.activities.doActivateSearchPerk(data)
+
+                    const plan = await this.searchManager.getSearchPoints()
+                    const doMobileSearch = plan.doMobile
+                    const doDesktopSearch = plan.doDesktop
+                    const desktopNeeded = this.config.workers.doPunchCards || doDesktopSearch || doVisualSearch
+
+                    this.cookies.mobile = await initialContext.cookies()
+                    await this.browser.func.closeBrowser(initialContext, accountEmail)
+                    mobileContextClosed = true
+
+                    if (desktopNeeded) {
+                        await executionContext.run({ isMobile: false, account }, async () => {
+                            desktopSession = await this.createDesktopSession(account)
+                            await this.punchcardManager.runDesktop()
+                            if (doVisualSearch) await this.activities.doVisualSearch()
+                        })
+
+                        await executionContext.run({ isMobile: false, account }, async () => {
+                            await this.browser.func.closeBrowser(desktopSession!.context, accountEmail)
+                        })
+                        desktopSession = null
+                    }
+
+                    if (this.config.workers.doDailySet) await this.workers.doDailySet(data)
+                    if (this.config.workers.doMorePromotions) await this.workers.doMorePromotions(data)
+                    if (this.config.workers.doDailyCheckIn) await this.activities.doDailyCheckIn()
+                    if (this.config.workers.doAppPromotions) await this.workers.doAppPromotions(appData)
+                    if (this.config.workers.doReadToEarn) await this.activities.doReadToEarn()
+
+                    if (doMobileSearch) mobilePoints = await this.searchManager.searchMobile(account)
+                    if (doBonus) bonusPoints = await this.searchManager.bonusMobile(account)
+                    if (doDesktopSearch) desktopPoints = await this.searchManager.searchDesktop(account)
+                } else {
+                    if (this.config.ensureStreakProtection) {
+                        await this.activities.doEnsureStreakProtection()
+                    }
+                    if (this.config.workers.doDailySet) await this.workers.doDailySet(data)
+                    if (this.config.workers.doActivateSearchPerk) await this.activities.doActivateSearchPerk(data)
+                    if (this.config.workers.doMorePromotions) await this.workers.doMorePromotions(data)
+                    if (this.config.workers.doDailyCheckIn) await this.activities.doDailyCheckIn()
+                    if (this.config.workers.doAppPromotions) await this.workers.doAppPromotions(appData)
+                    if (this.config.workers.doReadToEarn) await this.activities.doReadToEarn()
+                    if (this.config.workers.doPunchCards) await this.punchcardManager.runMobile(data)
+
+                    const plan = await this.searchManager.getSearchPoints()
+                    const doMobileSearch = plan.doMobile
+                    const doDesktopSearch = plan.doDesktop
+
+                    const desktopNeeded = this.config.workers.doPunchCards || doDesktopSearch || doVisualSearch
+
+                    if (parallel && !apiSearch && doMobileSearch && doDesktopSearch) {
+                        if (desktopNeeded) {
+                            await executionContext.run({ isMobile: false, account }, async () => {
+                                desktopSession = await this.createDesktopSession(account)
+                                await this.punchcardManager.runDesktop()
+                                if (doVisualSearch) await this.activities.doVisualSearch()
+                            })
+                        }
+
+                        ;[mobilePoints, desktopPoints] = await Promise.all([
+                            this.searchManager.searchMobile(account),
+                            this.searchManager.searchDesktop(account)
+                        ])
+
+                        if (doBonus) bonusPoints = await this.searchManager.bonusMobile(account)
+
+                        this.cookies.mobile = await initialContext.cookies()
+                        await this.browser.func.closeBrowser(initialContext, accountEmail)
+                        mobileContextClosed = true
+
+                        if (desktopSession) {
+                            await executionContext.run({ isMobile: false, account }, async () => {
+                                await this.browser.func.closeBrowser(desktopSession!.context, accountEmail)
+                            })
+                            desktopSession = null
+                        }
+                    } else {
+                        if (apiSearch) {
+                            this.cookies.mobile = await initialContext.cookies()
+                            await this.browser.func.closeBrowser(initialContext, accountEmail)
+                            mobileContextClosed = true
+
+                            if (doMobileSearch) mobilePoints = await this.searchManager.searchMobile(account)
+                            if (doBonus) bonusPoints = await this.searchManager.bonusMobile(account)
+                        } else {
+                            if (doMobileSearch) mobilePoints = await this.searchManager.searchMobile(account)
+                            if (doBonus) bonusPoints = await this.searchManager.bonusMobile(account)
+
+                            this.cookies.mobile = await initialContext.cookies()
+                            await this.browser.func.closeBrowser(initialContext, accountEmail)
+                            mobileContextClosed = true
+                        }
+
+                        if (desktopNeeded) {
+                            await executionContext.run({ isMobile: false, account }, async () => {
+                                desktopSession = await this.createDesktopSession(account)
+
+                                await this.punchcardManager.runDesktop()
+                                if (doVisualSearch) await this.activities.doVisualSearch()
+                                if (doDesktopSearch && !apiSearch) {
+                                    desktopPoints = await this.searchManager.searchDesktop(account)
+                                }
+                            })
+
+                            await executionContext.run({ isMobile: false, account }, async () => {
+                                await this.browser.func.closeBrowser(desktopSession!.context, accountEmail)
+                            })
+                            desktopSession = null
+
+                            if (doDesktopSearch && apiSearch) {
+                                desktopPoints = await this.searchManager.searchDesktop(account)
+                            }
+                        }
+                    }
                 }
 
-                // Bonus farming is its own pass that runs AFTER the normal searches
-                if (this.config.workers.doBonusSearches) {
-                    await this.searchManager.doBonusSearches(account)
-                }
+                this.logger.info(
+                    'main',
+                    'SEARCH-MANAGER',
+                    `Search summary | mobile=${mobilePoints} | desktop=${desktopPoints} | bonus=${bonusPoints} | total=${
+                        mobilePoints + desktopPoints + bonusPoints
+                    }`
+                )
 
-                // Do this last due to random bonus points from searching
                 if (this.config.workers.doClaimBonusPoints) await this.workers.doClaimBonusPoints(data)
-
-                this.cookies.mobile = await initialContext.cookies()
-
-                await this.browser.func.closeBrowser(initialContext, accountEmail)
-                mobileContextClosed = true
 
                 const finalPoints = await this.browser.func.getCurrentPoints()
                 const collectedPoints = finalPoints - initialPoints
@@ -538,6 +658,21 @@ export class MicrosoftRewardsBot {
                         `Mobile context close failed | ${error instanceof Error ? error.message : String(error)}`
                     )
                 }
+            }
+
+            if (desktopSession) {
+                try {
+                    await executionContext.run({ isMobile: false, account }, async () => {
+                        await this.browser.func.closeBrowser(desktopSession!.context, accountEmail)
+                    })
+                } catch (error) {
+                    this.logger.debug(
+                        'main',
+                        'CLEANUP',
+                        `Desktop context close failed | ${error instanceof Error ? error.message : String(error)}`
+                    )
+                }
+                desktopSession = null
             }
         }
     }

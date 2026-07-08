@@ -441,8 +441,8 @@ export class Workers {
         if (api) {
             const type = (api.promotionType ?? '').toLowerCase()
             const attrType = String(api.attributes?.type ?? '').toLowerCase()
-            const dest = (api.destinationUrl ?? '').toLowerCase()
-            if (type === 'search' || attrType === 'search' || /bing\.com\/search/.test(dest)) {
+            const progressMax = Number(api.activityProgressMax ?? 0)
+            if (type === 'search' || attrType === 'search' || progressMax > 1) {
                 return true
             }
         }

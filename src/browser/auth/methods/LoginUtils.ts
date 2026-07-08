@@ -45,7 +45,10 @@ export function promptInput(options: PromptOptions): Promise<string | null> {
 
 export async function getSubtitleMessage(page: Page): Promise<string | null> {
     const message = await page
-        .waitForSelector('[data-testid="subtitle"], div#oneTimeCodeDescription', { state: 'visible', timeout: 1000 })
+        .waitForSelector('[data-testid="subtitle"], div#oneTimeCodeDescription, [data-testid="description"]', {
+            state: 'visible',
+            timeout: 1000
+        })
         .catch(() => null)
 
     if (!message) return null
