@@ -75,6 +75,7 @@ export interface ConfigActivities {
 export interface ConfigWebhook {
     discord?: WebhookDiscordConfig
     ntfy?: WebhookNtfyConfig
+    telegram?: WebhookTelegramConfig
     webhookLogFilter: LogFilter
 }
 
@@ -99,4 +100,10 @@ export interface WebhookNtfyConfig {
     title?: string
     tags?: string[]
     priority?: 1 | 2 | 3 | 4 | 5 // 5 highest (important)
+}
+
+export interface WebhookTelegramConfig {
+    enabled?: boolean
+    botToken: string
+    chatId: string | number
 }
