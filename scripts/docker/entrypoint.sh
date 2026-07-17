@@ -340,24 +340,44 @@ export API_HOST
 if [ "${API_MODE:-false}" = "true" ]; then
   # API-integrated mode:
   #   - The API server is the main (foreground) process and becomes PID 1.
-  #   - If CRON_SCHEDULE is set, cron also runs as a background daemon.
+  #   - The cron schedule can come from two places, checked in this order:
+  #       1. config/schedule.json - a persisted override written by
+  #          PUT /schedule (e.g. from the dashboard). Present only if that
+  #          endpoint has been used at least once; survives restarts because
+  #          it lives in the ./config bind mount.
+  #       2. CRON_SCHEDULE - the env var, exactly as before. This remains the
+  #          only thing that matters for anyone not using PUT /schedule.
+  #   - Either way, if a schedule is active, cron runs as a background daemon;
   #     run_daily.sh detects API_MODE=true and calls POST /start via
   #     scripts/api/trigger.js instead of running npm start directly, so the
   #     API server has full visibility and control over every run.
-  #   - Without CRON_SCHEDULE, runs must be triggered manually via POST /start.
-  if [ -n "${CRON_SCHEDULE:-}" ]; then
+  #   - With neither source configured, runs must be triggered manually via
+  #     POST /start.
+  export TZ
+
+  SCHEDULE_OVERRIDE="${SCHEDULE_FILE:-$SCRIPT_DIR/config/schedule.json}"
+
+  if [ -f "$SCHEDULE_OVERRIDE" ]; then
+    echo "[entrypoint] Found $SCHEDULE_OVERRIDE - applying it (overrides CRON_SCHEDULE)."
+    if node scripts/api/apply-schedule.js; then
+      cron -f &
+      echo "[entrypoint] Cron started in background (schedule: from schedule.json, TZ: $TZ)"
+    else
+      echo "ERROR: Could not apply $SCHEDULE_OVERRIDE." >&2
+      exit 1
+    fi
+  elif [ -n "${CRON_SCHEDULE:-}" ]; then
     if [ ! -f /etc/cron.d/microsoft-rewards-cron.template ]; then
       echo "ERROR: Cron template /etc/cron.d/microsoft-rewards-cron.template not found." >&2
       exit 1
     fi
-    export TZ
     envsubst < /etc/cron.d/microsoft-rewards-cron.template > /etc/cron.d/microsoft-rewards-cron
     chmod 0644 /etc/cron.d/microsoft-rewards-cron
     crontab /etc/cron.d/microsoft-rewards-cron
     cron -f &
     echo "[entrypoint] Cron started in background (schedule: $CRON_SCHEDULE, TZ: $TZ)"
   else
-    echo "[entrypoint] No CRON_SCHEDULE set — runs must be triggered manually via POST /start"
+    echo "[entrypoint] No CRON_SCHEDULE set and no schedule.json override - runs must be triggered manually via POST /start, or scheduled from the dashboard."
   fi
   echo "[entrypoint] Starting control API on ${API_HOST}:${API_PORT:-3010} at $(date)"
   exec node scripts/api/server.js
