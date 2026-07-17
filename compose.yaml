@@ -1,9 +1,7 @@
 services:
     microsoft-rewards-script:
-        # image: ghcr.io/thenetsky/microsoft-rewards-script:latest
-        # To build locally instead of pulling the prebuilt image, use the build section below.
-        build:
-            context: .
+        build: .
+        image: netsky
         container_name: microsoft-rewards-script
         restart: unless-stopped
         volumes:
@@ -13,7 +11,7 @@ services:
             # Load account credentials from the .env file (ACCOUNT_1_EMAIL, ACCOUNT_1_PASSWORD, etc.)
             - path: .env
         environment:
-            # Scheduling
+            # ── Scheduler ──────────────────────────────────────
             TZ: 'Asia/Shanghai'
             NODE_ENV: 'production'
             CRON_SCHEDULE: '0 7 * * *' # use crontab.guru to customize your schedule
@@ -23,13 +21,23 @@ services:
             #MAX_SLEEP_MINUTES: "50"
             #STUCK_PROCESS_TIMEOUT_HOURS: "8"
 
-            # Configuration
+            # ── API mode ──────────────────────────────────────
+            # Set API_MODE=true to run the API server for additional control options
+            #API_MODE: 'true'
+            #API_TOKEN: '${API_TOKEN}'             # required for API mode, see example.env
+
+            #  ── Configuration ──────────────────────────────────────
             # Uncomment to override defaults, a full list of configuration options are in the README.
             #CONFIG_CLUSTERS: '1'
             #... add additional configuration overrides as needed
 
+        # ── API mode port mapping ──────────────────────────────────────
+        # Uncomment when API_MODE=true
+        #ports:
+        #    - '3010:3010'
+
         healthcheck:
-            test: ['CMD', 'sh', '-c', 'pgrep cron > /dev/null || exit 1']
+            test: ['CMD-SHELL', 'pgrep -x node >/dev/null 2>&1 || pgrep -x cron >/dev/null 2>&1']
             interval: 60s
             timeout: 10s
             retries: 3

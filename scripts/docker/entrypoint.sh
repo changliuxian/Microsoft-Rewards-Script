@@ -12,11 +12,14 @@ ln -snf "/usr/share/zoneinfo/$TZ" /etc/localtime
 echo "$TZ" > /etc/timezone
 dpkg-reconfigure -f noninteractive tzdata
 
-# 2. Validate CRON_SCHEDULE
-if [ -z "${CRON_SCHEDULE:-}" ]; then
-  echo "ERROR: CRON_SCHEDULE environment variable is not set." >&2
-  echo "Please set CRON_SCHEDULE (e.g., \"0 2 * * *\")." >&2
-  exit 1
+# 2. Validate CRON_SCHEDULE (not required in API mode)
+if [ "${API_MODE:-false}" != "true" ]; then
+  if [ -z "${CRON_SCHEDULE:-}" ]; then
+    echo "ERROR: CRON_SCHEDULE environment variable is not set." >&2
+    echo "Please set CRON_SCHEDULE (e.g., \"0 2 * * *\")." >&2
+    echo "       To run the API server instead, set API_MODE=true." >&2
+    exit 1
+  fi
 fi
 
 # 3. Accounts: read directly from ACCOUNT_N_* env vars by the app at runtime.
@@ -312,6 +315,9 @@ chmod 600 /etc/container_env
 # 5. Initial run without sleep if RUN_ON_START=true
 # ─────────────────────────────────────────────────────────────────────────────
 if [ "${RUN_ON_START:-false}" = "true" ]; then
+  # Always go through run_daily.sh so the lockfile is acquired and the same
+  # code path runs regardless of mode.  In API mode, run_daily.sh calls
+  # trigger.js which waits for the API server to be ready before firing.
   echo "[entrypoint] Starting initial run in background at $(date)"
   (
     cd "$SCRIPT_DIR" || {
@@ -324,7 +330,40 @@ if [ "${RUN_ON_START:-false}" = "true" ]; then
   echo "[entrypoint] Background process started (PID: $!)"
 fi
 
-# 6. Template and register cron file
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. Start: scheduler-only (default) or API-integrated mode
+# ─────────────────────────────────────────────────────────────────────────────
+# Default API_HOST to 0.0.0.0 so Docker port-mapping works out of the box.
+: "${API_HOST:=0.0.0.0}"
+export API_HOST
+
+if [ "${API_MODE:-false}" = "true" ]; then
+  # API-integrated mode:
+  #   - The API server is the main (foreground) process and becomes PID 1.
+  #   - If CRON_SCHEDULE is set, cron also runs as a background daemon.
+  #     run_daily.sh detects API_MODE=true and calls POST /start via
+  #     scripts/api/trigger.js instead of running npm start directly, so the
+  #     API server has full visibility and control over every run.
+  #   - Without CRON_SCHEDULE, runs must be triggered manually via POST /start.
+  if [ -n "${CRON_SCHEDULE:-}" ]; then
+    if [ ! -f /etc/cron.d/microsoft-rewards-cron.template ]; then
+      echo "ERROR: Cron template /etc/cron.d/microsoft-rewards-cron.template not found." >&2
+      exit 1
+    fi
+    export TZ
+    envsubst < /etc/cron.d/microsoft-rewards-cron.template > /etc/cron.d/microsoft-rewards-cron
+    chmod 0644 /etc/cron.d/microsoft-rewards-cron
+    crontab /etc/cron.d/microsoft-rewards-cron
+    cron -f &
+    echo "[entrypoint] Cron started in background (schedule: $CRON_SCHEDULE, TZ: $TZ)"
+  else
+    echo "[entrypoint] No CRON_SCHEDULE set — runs must be triggered manually via POST /start"
+  fi
+  echo "[entrypoint] Starting control API on ${API_HOST}:${API_PORT:-3010} at $(date)"
+  exec node scripts/api/server.js
+fi
+
+# Scheduler-only mode (default): cron calls npm start directly.
 if [ ! -f /etc/cron.d/microsoft-rewards-cron.template ]; then
   echo "ERROR: Cron template /etc/cron.d/microsoft-rewards-cron.template not found." >&2
   exit 1
