@@ -72,7 +72,7 @@ export class ClaimReward extends Workers {
                 this.bot.logger.info(
                     this.bot.isMobile,
                     'CLAIM-REWARD',
-                    `Reward claimed | offerId=${offerId} | status=${status}${gained > 0 ? ` | gainedPoints=${gained}` : ''}`,
+                    `Reward claimed | offerId=${offerId} | status=${status} ${gained > 0 ? `| gainedPoints=${gained}` : ''}`,
                     'green'
                 )
             } else {

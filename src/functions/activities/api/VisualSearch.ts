@@ -168,7 +168,7 @@ export class VisualSearch extends Workers {
                 this.bot.logger.info(
                     this.bot.isMobile,
                     'VISUAL-SEARCH',
-                    `Daily visual search done | +${gained} | "${visual.query}" | balance=${res.balance}`,
+                    `Daily visual search done | gainedPoints=${gained} | "${visual.query}" | newBalance=${res.balance}`,
                     'green'
                 )
                 return gained

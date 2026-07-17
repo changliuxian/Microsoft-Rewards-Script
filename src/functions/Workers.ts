@@ -301,7 +301,7 @@ export class Workers {
         this.bot.logger.info(
             this.bot.isMobile,
             'PUNCHCARD',
-            `Quest "${title}" ${remaining === 0 ? 'COMPLETE' : 'in progress'} | reported=${reported}${remaining ? ` | remaining=${remaining}` : ''} | gainedPoints=${gained}${parent.pointProgressMax > 0 ? `/${parent.pointProgressMax}` : ''}`,
+            `Quest "${title}" ${remaining === 0 ? 'COMPLETE' : 'in progress'} | reported=${reported}${remaining ? ` | remaining=${remaining}` : ''} | gainedPoints=${gained} ${parent.pointProgressMax > 0 ? `/${parent.pointProgressMax}` : ''}`,
             gained > 0 ? 'green' : undefined
         )
     }

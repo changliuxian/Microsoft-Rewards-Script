@@ -76,7 +76,7 @@ export class UrlReward extends Workers {
                 this.bot.logger.info(
                     this.bot.isMobile,
                     'URL-REWARD',
-                    `Completed UrlReward | offerId=${offerId} | gainedPoints=${gainedPoints}${expectedPoints > 0 ? `/${expectedPoints}` : ''} | newBalance=${newBalance}${shortfall ? ' | WARNING: credited less than advertised' : ''}`,
+                    `Completed UrlReward | offerId=${offerId} | gainedPoints=${gainedPoints} | newBalance=${newBalance}${shortfall ? ' | WARNING: credited less than advertised' : ''}`,
                     'green'
                 )
             } else if (acknowledged && expectedPoints === 0) {
