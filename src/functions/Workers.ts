@@ -182,30 +182,9 @@ export class Workers {
         this.bot.logger.info(this.bot.isMobile, 'PUNCHCARD', 'Finished processing quests')
     }
 
-    public async doClaimBonusPoints(data: DashboardData) {
-        const pointsActivity = data.dashboard.pointClaimBannerPromotion
-
-        if (!pointsActivity) {
-            this.bot.logger.info(this.bot.isMobile, 'CLAIM-BONUS-POINTS', 'No claim bonus points banner found')
-            return
-        }
-
-        if (pointsActivity.complete) {
-            this.bot.logger.info(
-                this.bot.isMobile,
-                'CLAIM-BONUS-POINTS',
-                `Bonus points have already been claimed | offerId=${pointsActivity.offerId}`
-            )
-            return
-        }
-
+    public async doClaimBonusPoints() {
+        // Let's just always try to do this
         await this.bot.activities.doClaimBonusPoints()
-
-        this.bot.logger.info(
-            this.bot.isMobile,
-            'CLAIM-BONUS-POINTS',
-            `Bonus points have been claimed | title="${pointsActivity.title}" | offerId=${pointsActivity.offerId}`
-        )
     }
 
     private async solvePunchCard(parent: ParentQuest, apiCard: PunchCard | undefined, page: Page) {
@@ -301,7 +280,7 @@ export class Workers {
         this.bot.logger.info(
             this.bot.isMobile,
             'PUNCHCARD',
-            `Quest "${title}" ${remaining === 0 ? 'COMPLETE' : 'in progress'} | reported=${reported}${remaining ? ` | remaining=${remaining}` : ''} | gainedPoints=${gained} ${parent.pointProgressMax > 0 ? `/${parent.pointProgressMax}` : ''}`,
+            `Quest "${title}" ${remaining === 0 ? 'COMPLETE' : 'in progress'} | reported=${reported}${remaining ? ` | remaining=${remaining}` : ''} | pointsGained=${gained} | currentBalance=${this.bot.userData.currentPoints}${parent.pointProgressMax > 0 ? ` | targetPoints=${parent.pointProgressMax}` : ''}`,
             gained > 0 ? 'green' : undefined
         )
     }
@@ -345,7 +324,7 @@ export class Workers {
             this.bot.logger.info(
                 this.bot.isMobile,
                 'PUNCHCARD',
-                `Reported child | offerId=${offerId} | status=${status} | acknowledged=${acknowledged}${gained > 0 ? ` | gainedPoints=${gained}` : ''}`,
+                `Reported child | offerId=${offerId} | status=${status} | acknowledged=${acknowledged} | pointsGained=${gained} | currentBalance=${newBalance}`,
                 gained > 0 || acknowledged ? 'green' : undefined
             )
         } catch (error) {
