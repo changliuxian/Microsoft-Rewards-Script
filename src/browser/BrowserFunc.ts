@@ -6,6 +6,7 @@ import type { BrowserContext, Cookie, Page } from 'patchright'
 import type { HttpRequestConfig } from '../util/Http'
 
 import type { MicrosoftRewardsBot } from '../index'
+import type { PageSnapshot } from './ReactFunc'
 import { saveStorageState } from '../util/SessionStore'
 import { isBrowserClosedError } from '../util/Utils'
 
@@ -14,13 +15,18 @@ import type { AppUserData } from '../interface/AppUserData'
 import type { AppEarnablePoints, BrowserEarnablePoints, MissingSearchPoints } from '../interface/Points'
 import type { AppDashboardData } from '../interface/AppDashBoardData'
 
-// Bing-hosted image used to seed the daily visual search. /images/kblob fetches it (Can be changed)
+// Fallback seed only. bcid is derived from the image BYTES, so a fixed seed produces the same blob each time
+// Bing treats same search as a repeat search and credits nothing.
 const VISUAL_SEARCH_IMAGE_URL = 'https://th.bing.com/th?id=OMR.VisualSearch.VNext.BackgroundImage.png&pid=Rewards'
+
+// Bing's own wallpaper archive, used to rotate the seed. idx 0-7 covers the last 8 days
+const VISUAL_SEARCH_ARCHIVE_SIZE = 8
 
 export default class BrowserFunc {
     private bot: MicrosoftRewardsBot
 
     private bingJars = new Map<string, Map<string, string>>()
+    private rewardsDeploymentId = ''
 
     constructor(bot: MicrosoftRewardsBot) {
         this.bot = bot
@@ -234,11 +240,9 @@ export default class BrowserFunc {
             // /earn is the offers page
             await page.goto(URLs.rewards.earn, { waitUntil: 'domcontentloaded' })
             const earnHtml = await page.content()
+            this.rewardsDeploymentId = this.bot.browser.react.buildId(earnHtml) ?? ''
 
             this.bot.nextRouterStateTree = this.bot.browser.react.routerStateTree('earn')
-
-            //offers (valid hashes), streaks, account state
-            this.bot.reactSnapshot = this.bot.browser.react.snapshotPage(earnHtml)
 
             // pull /dashboard HTML to capture chunks that /earn doesn't show
             let dashboardHtml = ''
@@ -261,10 +265,12 @@ export default class BrowserFunc {
                 )
             }
 
+            this.bot.reactSnapshot = this.bot.browser.react.snapshotPage([earnHtml, dashboardHtml])
+
             // discovered from chunks referenced by either page
             this.bot.nextActions = await this.resolveActionIds(page, [earnHtml, dashboardHtml])
 
-            const dashboardRendered = /<section\b[^>]*\bid=["']dailyset["']/i.test(dashboardHtml || earnHtml)
+            const dashboardRendered = /<section\b[^>]*\bid=["']dailyset["']/i.test(`${earnHtml}\n${dashboardHtml}`)
             if (!dashboardRendered) {
                 throw new Error(
                     'Rewards dashboard did not render (no section#dailyset) - likely a login/redirect issue, aborting'
@@ -296,7 +302,8 @@ export default class BrowserFunc {
             this.bot.logger.info(
                 this.bot.isMobile,
                 'BUILD',
-                `Rewards build | id=${this.bot.browser.react.buildId(earnHtml) ?? 'unknown'}`
+                `Rewards build | id=${this.rewardsDeploymentId || 'unknown'}`,
+                'cyan'
             )
         } catch (error) {
             this.bot.logger.error(
@@ -535,7 +542,8 @@ export default class BrowserFunc {
                 Accept: 'text/x-component',
                 'Content-Type': 'text/plain;charset=UTF-8',
                 'Next-Action': actionId,
-                'Next-Router-State-Tree': routerStateTree
+                'Next-Router-State-Tree': routerStateTree,
+                ...(this.rewardsDeploymentId ? { 'X-Deployment-Id': this.rewardsDeploymentId } : {})
             },
             data: JSON.stringify(body)
         }
@@ -604,7 +612,7 @@ export default class BrowserFunc {
         }
 
         const params = new URLSearchParams({ IG: ig, IID: 'SERP.5064', q: query, FORM: 'ANNTA1', cvid, ajaxreq: '1' })
-        // Credit the offer rather than only the daily search counter!
+
         const reportUrl = `${URLs.bing.origin}/rewardsapp/reportActivity?${params.toString()}${opts?.cg ? `&cg=${opts.cg}` : ''}`
 
         const reportRes = await this.bot.http.request({
@@ -648,13 +656,6 @@ export default class BrowserFunc {
         searchPointsLimit: number | null
     }> {
         const { bcid, query, serpUrl } = visual
-
-        const jar = this.getBingJar()
-
-        const base = { ...(this.bot.fingerprint?.headers ?? {}) }
-        delete base['Cookie']
-        delete base['cookie']
-
         const empty = {
             ig: null,
             balance: null,
@@ -663,89 +664,95 @@ export default class BrowserFunc {
             searchPointsLimit: null
         }
 
-        const searchRes = await this.bot.http.request({
-            url: serpUrl,
-            method: 'GET',
-            headers: {
-                ...base,
-                Cookie: this.jarToHeader(jar),
-                Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Sec-Fetch-Dest': 'document',
-                'Sec-Fetch-Mode': 'navigate',
-                'Sec-Fetch-Site': 'none',
-                'Sec-Fetch-User': '?1',
-                'Upgrade-Insecure-Requests': '1'
-            }
-        })
-        this.mergeSetCookies(jar, searchRes.headers?.['set-cookie'] as string[] | string | undefined)
-
-        const ig =
-            typeof searchRes.data === 'string'
-                ? ((searchRes.data.match(/\bIG:"([A-F0-9]{32})"/i) ??
-                      searchRes.data.match(/[?&]IG=([A-F0-9]{32})\b/i))?.[1] ?? null)
-                : null
-        if (!ig) {
+        const sourcePage = this.bot.mainDesktopPage
+        if (!sourcePage || sourcePage.isClosed()) {
             this.bot.logger.warn(
                 this.bot.isMobile,
                 'VISUAL-SEARCH-REPORT',
-                `No IG for "${query}" - visual SERP not served as expected`
+                'Desktop page is unavailable - cannot run the visual-search browser flow'
             )
             return { ...empty, gained: null }
         }
 
-        const params = new URLSearchParams({
-            IG: ig,
-            IID: 'SERP.5064',
-            q: query,
-            bcid,
-            FORM: 'SBIHMP',
-            hq: '1',
-            ajaxreq: '1'
-        })
-        const reportUrl = `${URLs.bing.origin}/rewardsapp/reportActivity?${params.toString()}`
+        let visualPage: Page | null = null
+        try {
+            visualPage = await sourcePage.context().newPage()
+            const reportResponsePromise = visualPage
+                .waitForResponse(
+                    response => {
+                        if (response.request().method() !== 'POST') return false
+                        try {
+                            const responseUrl = new URL(response.url())
+                            return (
+                                responseUrl.origin === URLs.bing.origin &&
+                                responseUrl.pathname.toLowerCase() === '/rewardsapp/reportactivity' &&
+                                responseUrl.searchParams.get('bcid') === bcid
+                            )
+                        } catch {
+                            return false
+                        }
+                    },
+                    { timeout: 20000 }
+                )
+                .catch(() => null)
 
-        const reportRes = await this.bot.http.request({
-            url: reportUrl,
-            method: 'POST',
-            headers: {
-                ...base,
-                Cookie: this.jarToHeader(jar),
-                Accept: '*/*',
-                'Content-Type': 'application/x-www-form-urlencoded',
-                Referer: serpUrl,
-                Origin: URLs.bing.origin,
-                'Sec-Fetch-Dest': 'empty',
-                'Sec-Fetch-Mode': 'cors',
-                'Sec-Fetch-Site': 'same-origin',
-                'X-Requested-With': 'XMLHttpRequest'
-            },
-            data: `url=${encodeURIComponent(serpUrl)}&V=web`
-        })
-        this.mergeSetCookies(jar, reportRes.headers?.['set-cookie'] as string[] | string | undefined)
+            await visualPage.goto(serpUrl, { waitUntil: 'domcontentloaded', timeout: 20000 })
+            const reportResponse = await reportResponsePromise
+            if (!reportResponse) {
+                this.bot.logger.warn(
+                    this.bot.isMobile,
+                    'VISUAL-SEARCH-REPORT',
+                    `Bing did not issue reportActivity for "${query}" | bcid=${bcid.slice(0, 12)}`
+                )
+                return { ...empty, gained: null }
+            }
 
-        const parsed = this.parseReportResponse(reportRes.data)
-        const gained =
-            parsed.balance != null && parsed.previousBalance != null ? parsed.balance - parsed.previousBalance : null
+            const responseUrl = new URL(reportResponse.url())
+            const ig = responseUrl.searchParams.get('IG')
+            const parsed = this.parseReportResponse(await reportResponse.text())
+            const gained =
+                parsed.balance != null && parsed.previousBalance != null
+                    ? parsed.balance - parsed.previousBalance
+                    : null
 
-        this.bot.logger.debug(
-            this.bot.isMobile,
-            'VISUAL-SEARCH-REPORT',
-            `Reported "${query}" | ig=${ig} | bcid=${bcid.slice(0, 12)} | pointsGained=${gained ?? 'n/a'} | currentBalance=${parsed.balance ?? 'n/a'} | searchPts=${parsed.searchPointsEarned ?? 'n/a'}/${parsed.searchPointsLimit ?? 'n/a'}`
-        )
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                'VISUAL-SEARCH-REPORT',
+                `Browser reported "${query}" | status=${reportResponse.status()} | ig=${ig ?? 'n/a'} | bcid=${bcid.slice(0, 12)} | pointsGained=${gained ?? 'n/a'} | currentBalance=${parsed.balance ?? 'n/a'} | searchPts=${parsed.searchPointsEarned ?? 'n/a'}/${parsed.searchPointsLimit ?? 'n/a'}`
+            )
 
-        return { ig, ...parsed, gained }
+            return { ig, ...parsed, gained }
+        } catch (error) {
+            this.bot.logger.warn(
+                this.bot.isMobile,
+                'VISUAL-SEARCH-REPORT',
+                `Browser flow failed for "${query}" | ${error instanceof Error ? error.message : String(error)}`
+            )
+            return { ...empty, gained: null }
+        } finally {
+            await visualPage?.close().catch(() => {})
+        }
     }
 
-    async acquireVisualSearch(
-        imageUrl: string = VISUAL_SEARCH_IMAGE_URL
-    ): Promise<{ bcid: string; query: string; serpUrl: string } | null> {
+    async acquireVisualSearch(imageUrl?: string): Promise<{ bcid: string; query: string; serpUrl: string } | null> {
         try {
-            const jar = this.getBingJar()
+            const page = this.bot.mainDesktopPage
+            if (!page || page.isClosed()) {
+                this.bot.logger.warn(
+                    this.bot.isMobile,
+                    'VISUAL-SEARCH-BCID',
+                    'Desktop page is unavailable - cannot acquire a visual search'
+                )
+                return null
+            }
+
+            const seed = imageUrl ?? (await this.resolveVisualSearchImage(page))
+
             const base = { ...(this.bot.fingerprint?.headers ?? {}) }
             delete base['Cookie']
             delete base['cookie']
 
-            const enc = encodeURIComponent(imageUrl)
+            const enc = encodeURIComponent(seed)
             const url =
                 `${URLs.bing.origin}/images/kblob` + `?iss=sbi&form=SBIHMP&sbisrc=UrlPaste&vsimg=${enc}&imgurl=${enc}`
 
@@ -756,12 +763,9 @@ export default class BrowserFunc {
                 { name: 'imgurl', value: '' }
             ])
 
-            const res = await this.bot.http.request({
-                url,
-                method: 'POST',
+            const res = await page.request.post(url, {
                 headers: {
                     ...base,
-                    Cookie: this.jarToHeader(jar),
                     Accept: 'application/json',
                     'Content-Type': `multipart/form-data; boundary=${boundary}`,
                     Referer: `${URLs.bing.origin}/visualsearch`,
@@ -770,36 +774,40 @@ export default class BrowserFunc {
                     'Sec-Fetch-Mode': 'cors',
                     'Sec-Fetch-Site': 'same-origin'
                 },
-                data: body
+                data: body,
+                timeout: 20000
             })
-            this.mergeSetCookies(jar, res.headers?.['set-cookie'] as string[] | string | undefined)
 
-            const redirectUrl = this.parseKblobRedirect(res.data)
+            const responseData = await res.text()
+            const redirectUrl = this.parseKblobRedirect(responseData)
             if (!redirectUrl) {
-                const dump = typeof res.data === 'string' ? res.data : JSON.stringify(res.data ?? '')
                 this.bot.logger.warn(
                     this.bot.isMobile,
                     'VISUAL-SEARCH-BCID',
-                    `kblob returned no redirectUrl | status=${res.status} - the endpoint/shape may have changed`
+                    `kblob returned no redirectUrl | status=${res.status()} - the endpoint/shape may have changed`
                 )
-                this.bot.logger.debug(this.bot.isMobile, 'VISUAL-SEARCH-BCID', `kblob response: ${dump.slice(0, 400)}`)
+                this.bot.logger.debug(
+                    this.bot.isMobile,
+                    'VISUAL-SEARCH-BCID',
+                    `kblob response: ${responseData.slice(0, 400)}`
+                )
                 return null
             }
 
-            const qs = new URLSearchParams(redirectUrl.split('?')[1] ?? '')
-            const bcid = qs.get('bcid')
+            const redirect = new URL(redirectUrl, URLs.bing.origin)
+            const bcid = redirect.searchParams.get('bcid')
             if (!bcid) {
                 this.bot.logger.warn(this.bot.isMobile, 'VISUAL-SEARCH-BCID', `redirect had no bcid | ${redirectUrl}`)
                 return null
             }
 
-            const query = qs.get('q') ?? ''
-            const serpUrl = `${URLs.bing.origin}${redirectUrl}`
+            const query = redirect.searchParams.get('q') ?? ''
+            const serpUrl = redirect.toString()
 
             this.bot.logger.info(
                 this.bot.isMobile,
                 'VISUAL-SEARCH-BCID',
-                `Acquired bcid=${bcid.slice(0, 14)} | q="${query}" | status=${res.status}`,
+                `Acquired bcid=${bcid.slice(0, 14)} | q="${query}" | status=${res.status()} | seed=${seed.slice(0, 80)}`,
                 'green'
             )
             return { bcid, query, serpUrl }
@@ -811,6 +819,73 @@ export default class BrowserFunc {
             )
             return null
         }
+    }
+
+    private async resolveVisualSearchImage(page: Page): Promise<string> {
+        const idx = Math.floor(Math.random() * VISUAL_SEARCH_ARCHIVE_SIZE)
+
+        try {
+            const res = await page.request.get(
+                `${URLs.bing.origin}/HPImageArchive.aspx?format=js&idx=${idx}&n=1&mkt=en-US`,
+                { timeout: 10000 }
+            )
+
+            if (res.ok()) {
+                const payload = (await res.json()) as { images?: { url?: unknown }[] }
+                const url = payload?.images?.[0]?.url
+                if (typeof url === 'string' && url) {
+                    return new URL(url, URLs.bing.origin).toString()
+                }
+            }
+
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                'VISUAL-SEARCH-BCID',
+                `HPImageArchive returned no usable url | idx=${idx} | status=${res.status()} - using the static seed`
+            )
+        } catch (error) {
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                'VISUAL-SEARCH-BCID',
+                `HPImageArchive lookup failed | ${error instanceof Error ? error.message : String(error)} - using the static seed`
+            )
+        }
+
+        return VISUAL_SEARCH_IMAGE_URL
+    }
+
+    async refreshEarnSnapshot(): Promise<PageSnapshot | null> {
+        const page = this.bot.isMobile ? this.bot.mainMobilePage : this.bot.mainDesktopPage
+        if (!page || page.isClosed()) return null
+
+        const fetchSnapshotPage = async (url: string, route: string): Promise<string | null> => {
+            try {
+                const res = await page.request.get(url, { timeout: 20000 })
+                if (res.ok()) return await res.text()
+
+                this.bot.logger.debug(
+                    this.bot.isMobile,
+                    'EARN-SNAPSHOT',
+                    `Failed to fetch ${route} | status=${res.status()}`
+                )
+                return null
+            } catch (error) {
+                this.bot.logger.debug(
+                    this.bot.isMobile,
+                    'EARN-SNAPSHOT',
+                    `Failed to refresh ${route} snapshot | ${error instanceof Error ? error.message : String(error)}`
+                )
+                return null
+            }
+        }
+
+        const pages = await Promise.all([
+            fetchSnapshotPage(URLs.rewards.earn, '/earn'),
+            fetchSnapshotPage(URLs.rewards.dashboard, '/dashboard')
+        ])
+        const availablePages = pages.filter((html): html is string => html !== null)
+
+        return availablePages.length ? this.bot.browser.react.snapshotPage(availablePages) : null
     }
 
     resetHttpJars(): void {
@@ -874,7 +949,7 @@ export default class BrowserFunc {
             return empty
         }
     }
-    
+
     private buildMultipart(boundary: string, fields: { name: string; value: string }[]): Buffer {
         const parts: Buffer[] = []
         for (const f of fields) {
@@ -904,4 +979,3 @@ export default class BrowserFunc {
         return null
     }
 }
-

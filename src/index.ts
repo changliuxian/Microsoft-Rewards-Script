@@ -531,7 +531,7 @@ export class MicrosoftRewardsBot {
                         await executionContext.run({ isMobile: false, account }, async () => {
                             desktopSession = await this.createDesktopSession(account)
                             await this.punchcardManager.runDesktop()
-                            if (doVisualSearch) await this.activities.doVisualSearch()
+                            if (doVisualSearch) await this.activities.doVisualSearch(data)
                         })
 
                         await executionContext.run({ isMobile: false, account }, async () => {
@@ -572,7 +572,7 @@ export class MicrosoftRewardsBot {
                             await executionContext.run({ isMobile: false, account }, async () => {
                                 desktopSession = await this.createDesktopSession(account)
                                 await this.punchcardManager.runDesktop()
-                                if (doVisualSearch) await this.activities.doVisualSearch()
+                                if (doVisualSearch) await this.activities.doVisualSearch(data)
                             })
                         }
 
@@ -615,7 +615,7 @@ export class MicrosoftRewardsBot {
                                 desktopSession = await this.createDesktopSession(account)
 
                                 await this.punchcardManager.runDesktop()
-                                if (doVisualSearch) await this.activities.doVisualSearch()
+                                if (doVisualSearch) await this.activities.doVisualSearch(data)
                                 if (doDesktopSearch && !apiSearch) {
                                     desktopPoints = await this.searchManager.searchDesktop(account)
                                 }

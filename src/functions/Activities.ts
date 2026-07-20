@@ -81,10 +81,10 @@ export default class Activities {
         const activateSearchPerk = new ActivateSearchPerk(this.bot)
         await activateSearchPerk.activate(data)
     }
-    
-    doVisualSearch = async (): Promise<number> => {
+
+    doVisualSearch = async (data: DashboardData): Promise<number> => {
         const visualSearch = new VisualSearch(this.bot)
-        return await visualSearch.doVisualSearch()
+        return await visualSearch.doVisualSearch(data)
     }
 
     // App
