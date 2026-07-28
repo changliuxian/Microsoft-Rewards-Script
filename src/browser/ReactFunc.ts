@@ -99,11 +99,6 @@ export default class ReactFunc {
             account
         }
     }
-
-    public getReportableOffers(html: string): ParsedOffer[] {
-        return this.parseOffers(this.concatFlightChunks(html)).filter(o => o.reportable)
-    }
-
     public getStreakProtection(html: string): StreakProtectionState | null {
         return this.parseStreakProtection(this.concatFlightChunks(html))
     }
@@ -124,11 +119,13 @@ export default class ReactFunc {
         try {
             const pushRe = /self\.__next_f\.push\(\[1,\s*"((?:[^"\\]|\\.)*)"\]\)/g
             const pages = typeof html === 'string' ? [html] : html
+            const perPage: string[] = []
             let combined = ''
             let count = 0
 
             for (const page of pages) {
                 let pageChunks = 0
+                const before = combined.length
 
                 for (const match of page.matchAll(pushRe)) {
                     try {
@@ -146,12 +143,13 @@ export default class ReactFunc {
                 }
 
                 if (pageChunks > 0) combined += '\n'
+                perPage.push(`${pageChunks}c/${combined.length - before}b`)
             }
 
             this.bot.logger.debug(
                 this.bot.isMobile,
                 'REACT-PARSE',
-                `Concatenated flight chunks | pages=${pages.length} | chunks=${count} | length=${combined.length}`
+                `Concatenated flight chunks | pages=${pages.length} | chunks=${count} | length=${combined.length} | perSource=[${perPage.join(', ')}]`
             )
 
             if (count === 0) {
@@ -327,6 +325,11 @@ export default class ReactFunc {
                 this.bot.isMobile,
                 'REACT-PARSE',
                 `Parsed offers | total=${unique.length} | reportable=${unique.filter(o => o.reportable).length}`
+            )
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                'REACT-PARSE',
+                `Parsed offer ids | ${unique.map(o => `${o.offerId}${o.reportable ? '' : '(skip)'}`).join(', ') || 'none'}`
             )
 
             return unique

@@ -6,8 +6,8 @@ import type { BrowserContext, Cookie, Page } from 'patchright'
 import type { HttpRequestConfig } from '../util/Http'
 
 import type { MicrosoftRewardsBot } from '../index'
-import type { PageSnapshot } from './ReactFunc'
-import { saveStorageState } from '../util/SessionStore'
+import type { PageSnapshot, ParsedOffer } from './ReactFunc'
+import { clearStorageState, loadSession, saveStorageState } from '../util/SessionStore'
 import { isBrowserClosedError } from '../util/Utils'
 
 import type { Counters, DashboardData } from './../interface/DashboardData'
@@ -34,26 +34,41 @@ export default class BrowserFunc {
 
     async getDashboardData(cookies?: Cookie[]): Promise<DashboardData> {
         try {
-            const request: HttpRequestConfig = {
+            const page = this.getActivePage()
+            const fingerprintHeaders = { ...(this.bot.fingerprint?.headers ?? {}) }
+            delete fingerprintHeaders['Cookie']
+            delete fingerprintHeaders['cookie']
+
+            if (page && !cookies) {
+                const response = await page.request.get(URLs.rewards.userInfoApi, {
+                    headers: {
+                        ...fingerprintHeaders,
+                        Referer: URLs.rewards.referer,
+                        Origin: URLs.rewards.origin
+                    },
+                    timeout: 20000
+                })
+
+                if (!response.ok()) throw new Error(`Request failed with status code ${response.status()}`)
+
+                await this.syncActiveCookies(page, 'GET-DASHBOARD-DATA')
+                return (await response.json()) as DashboardData
+            }
+
+            const response = await this.bot.http.request<DashboardData>({
                 url: URLs.rewards.userInfoApi,
                 method: 'GET',
                 headers: {
-                    ...(this.bot.fingerprint?.headers ?? {}),
-                    Cookie: this.buildCookieHeader(cookies ?? this.bot.cookies.mobile, [
-                        'bing.com',
-                        'live.com',
-                        'microsoftonline.com'
-                    ]),
+                    ...fingerprintHeaders,
+                    Cookie: this.buildCookieHeader(await this.getRequestCookies(cookies, URLs.rewards.userInfoApi)),
                     Referer: URLs.rewards.referer,
                     Origin: URLs.rewards.origin
                 }
-            }
+            })
 
-            const response = await this.bot.http.request(request)
+            await this.applyResponseCookies(URLs.rewards.userInfoApi, response.headers['set-cookie'])
 
-            if (response.data) {
-                return response.data as DashboardData
-            }
+            if (response.data) return response.data
             throw new Error('Dashboard data missing from API response')
         } catch (error) {
             throw this.bot.logger.error(
@@ -239,38 +254,24 @@ export default class BrowserFunc {
         try {
             // /earn is the offers page
             await page.goto(URLs.rewards.earn, { waitUntil: 'domcontentloaded' })
-            const earnHtml = await page.content()
-            this.rewardsDeploymentId = this.bot.browser.react.buildId(earnHtml) ?? ''
+
+            const earnDom = await page.content()
+            const earnRaw = await this.fetchBootstrapHtml(page, URLs.rewards.earn, '/earn')
+
+            this.rewardsDeploymentId = this.bot.browser.react.buildId(earnRaw || earnDom) ?? ''
 
             this.bot.nextRouterStateTree = this.bot.browser.react.routerStateTree('earn')
 
             // pull /dashboard HTML to capture chunks that /earn doesn't show
-            let dashboardHtml = ''
-            try {
-                const res = await page.request.get(URLs.rewards.dashboard)
-                if (res.ok()) {
-                    dashboardHtml = await res.text()
-                } else {
-                    this.bot.logger.warn(
-                        this.bot.isMobile,
-                        'BOOTSTRAP',
-                        `Failed to fetch /dashboard HTML | status=${res.status()} - action discovery may be incomplete`
-                    )
-                }
-            } catch (error) {
-                this.bot.logger.warn(
-                    this.bot.isMobile,
-                    'BOOTSTRAP',
-                    `Failed to fetch /dashboard HTML | error=${error instanceof Error ? error.message : String(error)} - action discovery may be incomplete`
-                )
-            }
+            const dashboardHtml = await this.fetchBootstrapHtml(page, URLs.rewards.dashboard, '/dashboard')
 
-            this.bot.reactSnapshot = this.bot.browser.react.snapshotPage([earnHtml, dashboardHtml])
+            const sources = [earnRaw, earnDom, dashboardHtml].filter(Boolean)
+            this.bot.reactSnapshot = this.bot.browser.react.snapshotPage(sources)
 
             // discovered from chunks referenced by either page
-            this.bot.nextActions = await this.resolveActionIds(page, [earnHtml, dashboardHtml])
+            this.bot.nextActions = await this.resolveActionIds(page, sources)
 
-            const dashboardRendered = /<section\b[^>]*\bid=["']dailyset["']/i.test(`${earnHtml}\n${dashboardHtml}`)
+            const dashboardRendered = /<section\b[^>]*\bid=["']dailyset["']/i.test(sources.join('\n'))
             if (!dashboardRendered) {
                 throw new Error(
                     'Rewards dashboard did not render (no section#dailyset) - likely a login/redirect issue, aborting'
@@ -313,6 +314,27 @@ export default class BrowserFunc {
             )
             throw error
         }
+    }
+
+    private async fetchBootstrapHtml(page: Page, url: string, route: string): Promise<string> {
+        try {
+            const res = await page.request.get(url, { timeout: 20000 })
+            if (res.ok()) return await res.text()
+
+            this.bot.logger.warn(
+                this.bot.isMobile,
+                'BOOTSTRAP',
+                `Failed to fetch ${route} HTML | status=${res.status()} - snapshot and action discovery may be incomplete`
+            )
+        } catch (error) {
+            this.bot.logger.warn(
+                this.bot.isMobile,
+                'BOOTSTRAP',
+                `Failed to fetch ${route} HTML | error=${error instanceof Error ? error.message : String(error)} - snapshot and action discovery may be incomplete`
+            )
+        }
+
+        return ''
     }
 
     private async resolveActionIds(page: Page, htmls: string[]): Promise<Record<string, string>> {
@@ -447,20 +469,19 @@ export default class BrowserFunc {
         return [...seen]
     }
 
-    async closeBrowser(browser: BrowserContext, email: string) {
+    async closeBrowser(browser: BrowserContext, email: string, persistSession = true) {
         const rootBrowser = browser.browser?.() || null
 
         try {
-            // Store state (cookies + localStorage) for next run
-            const storageState = await browser.storageState()
-            this.bot.logger.debug(
-                this.bot.isMobile,
-                'CLOSE-BROWSER',
-                `Saving session | cookies=${storageState.cookies.length} | origins=${storageState.origins.length}`
-            )
-            saveStorageState(this.bot.config.sessionPath, email, this.bot.isMobile, storageState)
-
-            await this.bot.utils.wait(2000)
+            if (persistSession) {
+                const storageState = await browser.storageState()
+                this.bot.logger.debug(
+                    this.bot.isMobile,
+                    'CLOSE-BROWSER',
+                    `Saving session | cookies=${storageState.cookies.length} | origins=${storageState.origins.length}`
+                )
+                saveStorageState(this.bot.config.sessionPath, email, this.bot.isMobile, storageState)
+            }
         } catch (error) {
             if (isBrowserClosedError(error)) {
                 this.bot.logger.debug(
@@ -494,21 +515,356 @@ export default class BrowserFunc {
         }
     }
 
-    buildCookieHeader(cookies: Cookie[], allowedDomains?: string[]): string {
-        return [
-            ...new Map(
-                cookies
-                    .filter(c => {
-                        if (!allowedDomains || allowedDomains.length === 0) return true
-                        return (
-                            typeof c.domain === 'string' &&
-                            allowedDomains.some(d => c.domain.toLowerCase().endsWith(d.toLowerCase()))
-                        )
+    private getActivePage(): Page | null {
+        const page = this.bot.isMobile ? this.bot.mainMobilePage : this.bot.mainDesktopPage
+        return page && !page.isClosed() ? page : null
+    }
+
+    async getRewardsPageHtml(url: string, route: string): Promise<string | null> {
+        const page = this.getActivePage()
+        if (!page) return await this.fetchRewardsHtml(url, route)
+
+        try {
+            const response = await page.request.get(url, { timeout: 20000 })
+            if (response.ok()) {
+                await this.syncActiveCookies(page, 'REWARDS-PAGE')
+                return await response.text()
+            }
+
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                'REWARDS-PAGE',
+                `Failed to fetch ${route} | status=${response.status()}`
+            )
+        } catch (error) {
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                'REWARDS-PAGE',
+                `Browser fetch failed for ${route} | ${error instanceof Error ? error.message : String(error)}`
+            )
+        }
+
+        return await this.fetchRewardsHtml(url, route)
+    }
+
+    private async getRequestCookies(explicitCookies?: Cookie[], targetUrl?: string): Promise<Cookie[]> {
+        if (explicitCookies) return targetUrl ? this.filterCookiesForUrl(explicitCookies, targetUrl) : explicitCookies
+
+        const cachedCookies = this.bot.isMobile ? this.bot.cookies.mobile : this.bot.cookies.desktop
+        const page = this.getActivePage()
+
+        if (!page) return targetUrl ? this.filterCookiesForUrl(cachedCookies, targetUrl) : cachedCookies
+
+        try {
+            const context = page.context()
+            const liveCookies = await context.cookies()
+            if (!liveCookies.length)
+                return targetUrl ? this.filterCookiesForUrl(cachedCookies, targetUrl) : cachedCookies
+
+            this.updateCookieCache(liveCookies, 'COOKIE-SYNC')
+            return targetUrl ? await context.cookies(targetUrl) : liveCookies
+        } catch (error) {
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                'COOKIE-SYNC',
+                `Using cached cookies because the active browser context could not be read | error=${error instanceof Error ? error.message : String(error)}`
+            )
+            return targetUrl ? this.filterCookiesForUrl(cachedCookies, targetUrl) : cachedCookies
+        }
+    }
+
+    async checkpointActiveSession(source = 'SESSION-CHECKPOINT'): Promise<boolean> {
+        const page = this.getActivePage()
+        if (!page) {
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                source,
+                'Could not checkpoint session because no active browser page is available'
+            )
+            return false
+        }
+
+        try {
+            await this.syncActiveCookies(page, source, true)
+            return true
+        } catch (error) {
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                source,
+                `Could not checkpoint active session | error=${error instanceof Error ? error.message : String(error)}`
+            )
+            return false
+        }
+    }
+
+    async clearActiveSessionState(page: Page, email: string, source = 'SESSION-RESET'): Promise<void> {
+        const context = page.context()
+        const previousState = await context.storageState().catch(() => ({ cookies: [], origins: [] }))
+
+        await context.clearCookies()
+
+        // Clear origin-bound browser storage as well. This makes the recovery path
+        // equivalent to deleting the saved session, without replacing the fingerprint.
+        try {
+            await page.evaluate(() => {
+                localStorage.clear()
+                sessionStorage.clear()
+            })
+        } catch {}
+
+        let clearedOrigins = 0
+        try {
+            const client = await context.newCDPSession(page)
+            for (const entry of previousState.origins) {
+                await client
+                    .send('Storage.clearDataForOrigin', {
+                        origin: entry.origin,
+                        storageTypes: 'local_storage,indexeddb,websql,service_workers,cache_storage'
                     })
-                    .map(c => [c.name, c])
-            ).values()
-        ]
-            .map(c => `${c.name}=${c.value}`)
+                    .catch(() => {})
+                clearedOrigins++
+            }
+            await client.detach().catch(() => {})
+        } catch (error) {
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                source,
+                `Origin-storage cleanup was only partially available | error=${error instanceof Error ? error.message : String(error)}`
+            )
+        }
+
+        clearStorageState(this.bot.config.sessionPath, email, this.bot.isMobile)
+        if (this.bot.isMobile) this.bot.cookies.mobile = []
+        else this.bot.cookies.desktop = []
+        this.resetHttpJars()
+
+        this.bot.logger.debug(
+            this.bot.isMobile,
+            source,
+            `Cleared active session state | cookies=${previousState.cookies.length} | origins=${clearedOrigins}`
+        )
+    }
+
+    private updateCookieCache(liveCookies: Cookie[], source: string): boolean {
+        const cachedCookies = this.bot.isMobile ? this.bot.cookies.mobile : this.bot.cookies.desktop
+        const cookieState = (cookie: Cookie) =>
+            JSON.stringify({
+                value: cookie.value,
+                expires: cookie.expires,
+                httpOnly: cookie.httpOnly,
+                secure: cookie.secure,
+                sameSite: cookie.sameSite
+            })
+        const cachedByKey = new Map(
+            cachedCookies.map(cookie => [`${cookie.domain}|${cookie.path}|${cookie.name}`, cookieState(cookie)])
+        )
+        const changed =
+            cachedCookies.length !== liveCookies.length ||
+            liveCookies.some(
+                cookie => cachedByKey.get(`${cookie.domain}|${cookie.path}|${cookie.name}`) !== cookieState(cookie)
+            )
+
+        if (this.bot.isMobile) this.bot.cookies.mobile = liveCookies
+        else this.bot.cookies.desktop = liveCookies
+
+        if (changed) {
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                source,
+                `Refreshed cookie cache | previous=${cachedCookies.length} | current=${liveCookies.length}`
+            )
+        }
+
+        return changed
+    }
+
+    private async syncActiveCookies(page: Page, source: string, forcePersist = false): Promise<void> {
+        try {
+            const context = page.context()
+            const liveCookies = await context.cookies()
+            const changed = this.updateCookieCache(liveCookies, source)
+            if (!changed && !forcePersist) return
+
+            const email = this.bot.currentAccountEmail
+            if (!email) return
+
+            const storageState = await context.storageState()
+            saveStorageState(this.bot.config.sessionPath, email, this.bot.isMobile, storageState)
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                source,
+                `Persisted live browser session | cookies=${storageState.cookies.length} | origins=${storageState.origins.length}`
+            )
+        } catch (error) {
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                source,
+                `Could not persist refreshed cookies | error=${error instanceof Error ? error.message : String(error)}`
+            )
+        }
+    }
+
+    private filterCookiesForUrl(cookies: Cookie[], targetUrl: string): Cookie[] {
+        const url = new URL(targetUrl)
+        const host = url.hostname.toLowerCase()
+        const requestPath = url.pathname || '/'
+        const now = Date.now() / 1000
+
+        return cookies
+            .filter(cookie => {
+                if (cookie.expires !== -1 && cookie.expires <= now) return false
+                if (cookie.secure && url.protocol !== 'https:') return false
+
+                const domain = cookie.domain.replace(/^\./, '').toLowerCase()
+                if (host !== domain && !host.endsWith(`.${domain}`)) return false
+
+                const cookiePath = cookie.path || '/'
+                if (!requestPath.startsWith(cookiePath)) return false
+                if (
+                    requestPath.length > cookiePath.length &&
+                    !cookiePath.endsWith('/') &&
+                    requestPath.charAt(cookiePath.length) !== '/'
+                )
+                    return false
+
+                return true
+            })
+            .sort((a, b) => (b.path?.length ?? 0) - (a.path?.length ?? 0))
+    }
+
+    private async applyResponseCookies(requestUrl: string, setCookieHeader?: string[] | string): Promise<void> {
+        if (!setCookieHeader) return
+
+        const rawCookies = Array.isArray(setCookieHeader)
+            ? setCookieHeader
+            : this.splitCombinedSetCookieHeader(setCookieHeader)
+        if (!rawCookies.length) return
+
+        const current = this.bot.isMobile ? this.bot.cookies.mobile : this.bot.cookies.desktop
+        const updated = [...current]
+        let changed = false
+
+        for (const raw of rawCookies) {
+            const parsed = this.parseSetCookie(raw, requestUrl)
+            if (!parsed) continue
+
+            const keyMatches = (cookie: Cookie) =>
+                cookie.name === parsed.cookie.name &&
+                cookie.domain === parsed.cookie.domain &&
+                cookie.path === parsed.cookie.path
+            const index = updated.findIndex(keyMatches)
+
+            if (parsed.remove) {
+                if (index >= 0) {
+                    updated.splice(index, 1)
+                    changed = true
+                }
+                continue
+            }
+
+            if (index >= 0) {
+                if (JSON.stringify(updated[index]) !== JSON.stringify(parsed.cookie)) {
+                    updated[index] = parsed.cookie
+                    changed = true
+                }
+            } else {
+                updated.push(parsed.cookie)
+                changed = true
+            }
+        }
+
+        if (!changed) return
+
+        this.updateCookieCache(updated, 'COOKIE-SYNC')
+
+        const email = this.bot.currentAccountEmail
+        if (!email) return
+
+        const saved = loadSession(this.bot.config.sessionPath, email, this.bot.isMobile)
+        saveStorageState(this.bot.config.sessionPath, email, this.bot.isMobile, {
+            cookies: updated,
+            origins: saved?.storageState?.origins ?? []
+        })
+        this.bot.logger.debug(
+            this.bot.isMobile,
+            'COOKIE-SYNC',
+            `Applied ${rawCookies.length} response cookie(s) and persisted the updated session`
+        )
+    }
+
+    private parseSetCookie(raw: string, requestUrl: string): { cookie: Cookie; remove: boolean } | null {
+        const parts = raw.split(';').map(part => part.trim())
+        const first = parts.shift()
+        if (!first) return null
+
+        const equals = first.indexOf('=')
+        if (equals <= 0) return null
+
+        const request = new URL(requestUrl)
+        const name = first.slice(0, equals).trim()
+        const value = first.slice(equals + 1)
+        let domain = request.hostname
+        let cookiePath = this.defaultCookiePath(request.pathname)
+        let expires = -1
+        let secure = false
+        let httpOnly = false
+        let sameSite: Cookie['sameSite'] = 'Lax'
+        let remove = false
+
+        for (const attribute of parts) {
+            const separator = attribute.indexOf('=')
+            const attributeName = (separator < 0 ? attribute : attribute.slice(0, separator)).trim().toLowerCase()
+            const attributeValue = separator < 0 ? '' : attribute.slice(separator + 1).trim()
+
+            if (attributeName === 'domain' && attributeValue) domain = attributeValue.toLowerCase()
+            else if (attributeName === 'path' && attributeValue) cookiePath = attributeValue
+            else if (attributeName === 'secure') secure = true
+            else if (attributeName === 'httponly') httpOnly = true
+            else if (attributeName === 'expires' && attributeValue) {
+                const parsed = Date.parse(attributeValue)
+                if (Number.isFinite(parsed)) expires = parsed / 1000
+            } else if (attributeName === 'max-age' && attributeValue) {
+                const seconds = Number(attributeValue)
+                if (Number.isFinite(seconds)) {
+                    if (seconds <= 0) remove = true
+                    else expires = Date.now() / 1000 + seconds
+                }
+            } else if (attributeName === 'samesite') {
+                const normalized = attributeValue.toLowerCase()
+                if (normalized === 'strict') sameSite = 'Strict'
+                else if (normalized === 'none') sameSite = 'None'
+                else sameSite = 'Lax'
+            }
+        }
+
+        if (expires !== -1 && expires <= Date.now() / 1000) remove = true
+
+        return {
+            cookie: { name, value, domain, path: cookiePath, expires, httpOnly, secure, sameSite },
+            remove
+        }
+    }
+
+    private defaultCookiePath(pathname: string): string {
+        if (!pathname || !pathname.startsWith('/') || pathname === '/') return '/'
+        const lastSlash = pathname.lastIndexOf('/')
+        return lastSlash <= 0 ? '/' : pathname.slice(0, lastSlash)
+    }
+
+    private splitCombinedSetCookieHeader(header: string): string[] {
+        return header
+            .split(/,(?=\s*[^;,=\s]+=[^;,]*)/g)
+            .map(value => value.trim())
+            .filter(Boolean)
+    }
+
+    buildCookieHeader(cookies: Cookie[], allowedDomains?: string[]): string {
+        return cookies
+            .filter(cookie => {
+                if (!allowedDomains?.length) return true
+                return allowedDomains.some(domain => cookie.domain.toLowerCase().endsWith(domain.toLowerCase()))
+            })
+            .map(cookie => `${cookie.name}=${cookie.value}`)
             .join('; ')
     }
 
@@ -522,36 +878,52 @@ export default class BrowserFunc {
         const referer = opts?.referer ?? url
         const routerStateTree = opts?.routerStateTree ?? this.bot.nextRouterStateTree
 
-        const cookieHeader = this.buildCookieHeader(
-            this.bot.isMobile ? this.bot.cookies.mobile : this.bot.cookies.desktop,
-            ['bing.com', 'live.com', 'microsoftonline.com']
-        )
-
         const fingerprintHeaders = { ...this.bot.fingerprint.headers }
         delete fingerprintHeaders['Cookie']
         delete fingerprintHeaders['cookie']
 
-        const request: HttpRequestConfig = {
+        const headers = {
+            ...fingerprintHeaders,
+            Referer: referer,
+            Origin: URLs.rewards.origin,
+            Accept: 'text/x-component',
+            'Content-Type': 'text/plain;charset=UTF-8',
+            'Next-Action': actionId,
+            'Next-Router-State-Tree': routerStateTree,
+            ...(this.rewardsDeploymentId ? { 'X-Deployment-Id': this.rewardsDeploymentId } : {})
+        }
+
+        const page = this.getActivePage()
+        if (page) {
+            const response = await page.request.post(url, {
+                headers,
+                data: JSON.stringify(body),
+                timeout: 20000
+            })
+            const responseBody = await response.text()
+            await this.syncActiveCookies(page, 'SERVER-ACTION')
+
+            return {
+                status: response.status(),
+                acknowledged: this.bot.utils.serverActionAcknowledged(responseBody)
+            }
+        }
+
+        const response = await this.bot.http.request({
             url,
             method: 'POST',
             headers: {
-                ...fingerprintHeaders,
-                Cookie: cookieHeader,
-                Referer: referer,
-                Origin: URLs.rewards.origin,
-                Accept: 'text/x-component',
-                'Content-Type': 'text/plain;charset=UTF-8',
-                'Next-Action': actionId,
-                'Next-Router-State-Tree': routerStateTree,
-                ...(this.rewardsDeploymentId ? { 'X-Deployment-Id': this.rewardsDeploymentId } : {})
+                ...headers,
+                Cookie: this.buildCookieHeader(await this.getRequestCookies(undefined, url))
             },
             data: JSON.stringify(body)
+        })
+        await this.applyResponseCookies(url, response.headers['set-cookie'])
+
+        return {
+            status: response.status,
+            acknowledged: this.bot.utils.serverActionAcknowledged(response.data)
         }
-
-        const response = await this.bot.http.request(request)
-        const acknowledged = this.bot.utils.serverActionAcknowledged(response.data)
-
-        return { status: response.status, acknowledged }
     }
 
     async reportSearchActivity(
@@ -856,27 +1228,11 @@ export default class BrowserFunc {
 
     async refreshEarnSnapshot(): Promise<PageSnapshot | null> {
         const page = this.bot.isMobile ? this.bot.mainMobilePage : this.bot.mainDesktopPage
-        if (!page || page.isClosed()) return null
+        const usePage = !!page && !page.isClosed()
 
         const fetchSnapshotPage = async (url: string, route: string): Promise<string | null> => {
-            try {
-                const res = await page.request.get(url, { timeout: 20000 })
-                if (res.ok()) return await res.text()
-
-                this.bot.logger.debug(
-                    this.bot.isMobile,
-                    'EARN-SNAPSHOT',
-                    `Failed to fetch ${route} | status=${res.status()}`
-                )
-                return null
-            } catch (error) {
-                this.bot.logger.debug(
-                    this.bot.isMobile,
-                    'EARN-SNAPSHOT',
-                    `Failed to refresh ${route} snapshot | ${error instanceof Error ? error.message : String(error)}`
-                )
-                return null
-            }
+            if (!usePage) return await this.fetchRewardsHtml(url, route)
+            return await this.getRewardsPageHtml(url, route)
         }
 
         const pages = await Promise.all([
@@ -886,6 +1242,64 @@ export default class BrowserFunc {
         const availablePages = pages.filter((html): html is string => html !== null)
 
         return availablePages.length ? this.bot.browser.react.snapshotPage(availablePages) : null
+    }
+
+    private async fetchRewardsHtml(url: string, route: string): Promise<string | null> {
+        try {
+            const headers = { ...(this.bot.fingerprint?.headers ?? {}) }
+            delete headers['Cookie']
+            delete headers['cookie']
+
+            const response = await this.bot.http.request<string>({
+                url,
+                method: 'GET',
+                headers: {
+                    ...headers,
+                    Cookie: this.buildCookieHeader(await this.getRequestCookies(undefined, url)),
+                    Referer: URLs.rewards.referer,
+                    Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+                },
+                responseType: 'text'
+            })
+
+            await this.applyResponseCookies(url, response.headers['set-cookie'])
+            return typeof response.data === 'string' ? response.data : null
+        } catch (error) {
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                'EARN-SNAPSHOT',
+                `Failed to fetch ${route} over http | ${error instanceof Error ? error.message : String(error)}`
+            )
+            return null
+        }
+    }
+
+    async ensureOffer(offerId: string): Promise<ParsedOffer | null> {
+        const cached = this.bot.reactSnapshot?.offers.find(o => o.offerId === offerId)
+        if (cached) return cached
+
+        this.bot.logger.debug(
+            this.bot.isMobile,
+            'EARN-SNAPSHOT',
+            `${offerId} absent from the cached snapshot (offers=${this.bot.reactSnapshot?.offers.length ?? 0}) - refetching /earn and /dashboard`
+        )
+
+        const refreshed = await this.refreshEarnSnapshot()
+        if (!refreshed) return null
+
+        if (!this.bot.reactSnapshot || refreshed.offers.length >= this.bot.reactSnapshot.offers.length) {
+            this.bot.reactSnapshot = refreshed
+        }
+
+        const live = refreshed.offers.find(o => o.offerId === offerId) ?? null
+
+        this.bot.logger.debug(
+            this.bot.isMobile,
+            'EARN-SNAPSHOT',
+            `Refetched /earn and /dashboard | offers=${refreshed.offers.length} | ${offerId} found=${!!live}`
+        )
+
+        return live
     }
 
     resetHttpJars(): void {
