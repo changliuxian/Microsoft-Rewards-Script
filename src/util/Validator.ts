@@ -1,9 +1,11 @@
 import { z } from 'zod'
 import semver from 'semver'
+import ms, { StringValue } from 'ms'
 import pkg from '../../package.json'
 
 import { Config } from '../interface/Config'
 import { Account } from '../interface/Account'
+import { normalizeCountry, normalizeLanguageTag } from './Locale'
 
 const NumberOrString = z.union([z.number(), z.string()])
 
@@ -15,17 +17,60 @@ const LogFilterSchema = z.object({
     regexPatterns: z.array(z.string()).optional()
 })
 
-const DelaySchema = z.object({
-    min: NumberOrString,
-    max: NumberOrString
-})
+function durationToMs(value: number | string): number | undefined {
+    return typeof value === 'number' ? value : ms(value as StringValue)
+}
+
+const DurationValue = NumberOrString.refine(value => {
+    const parsed = durationToMs(value)
+    return parsed !== undefined && Number.isFinite(parsed) && parsed >= 0
+}, 'Expected a non-negative duration')
+
+const DelaySchema = z
+    .object({
+        min: DurationValue,
+        max: DurationValue
+    })
+    .superRefine((delay, ctx) => {
+        const min = durationToMs(delay.min)
+        const max = durationToMs(delay.max)
+        if (min !== undefined && max !== undefined && max < min) {
+            ctx.addIssue({
+                code: 'custom',
+                message: 'Maximum delay must be greater than or equal to minimum delay'
+            })
+        }
+    })
 
 const QueryEngineSchema = z.union([
-    z.enum(['google', 'wikipedia', 'wikirandom', 'hackernews', 'reddit', 'local', 'customCN']),
+    z.enum(['google', 'wikipedia', 'wikirandom', 'hackernews', 'reddit', 'local']),
     z
         .string()
         .regex(/^rss(\.[A-Za-z0-9_-]+){0,2}$/, 'Invalid rss selector (use rss, rss.<site>, or rss.<site>.<endpoint>)')
 ])
+
+const AccountLanguageSchema = z
+    .string()
+    .trim()
+    .min(1)
+    .refine(value => {
+        try {
+            normalizeLanguageTag(value)
+            return true
+        } catch {
+            return false
+        }
+    }, 'Expected a valid BCP 47 language tag')
+    .transform(normalizeLanguageTag)
+
+const AccountCountrySchema = z
+    .string()
+    .trim()
+    .transform(value => (value.toLowerCase() === 'auto' ? 'auto' : value.toUpperCase()))
+    .refine(
+        value => value === 'auto' || normalizeCountry(value) !== undefined,
+        'Expected "auto" or a two-letter country code'
+    )
 
 // Webhook
 const WebhookSchema = z.object({
@@ -65,6 +110,7 @@ export const ConfigSchema = z.object({
     ensureStreakProtection: z.boolean(),
     autoClaimPunchcardRewards: z.boolean(),
     skipNonPointTasks: z.boolean().default(true),
+    accountDelay: DelaySchema.default({ min: '1min', max: '3min' }),
     workers: z.object({
         doDailySet: z.boolean(),
         doMorePromotions: z.boolean(),
@@ -119,8 +165,8 @@ export const AccountSchema = z.object({
     password: z.string(),
     totpSecret: z.string().optional(),
     recoveryEmail: z.string(),
-    geoLocale: z.string(),
-    langCode: z.string(),
+    geoLocale: AccountCountrySchema,
+    langCode: AccountLanguageSchema,
     proxy: z.object({
         proxyHttp: z.boolean(),
         url: z.string(),
@@ -142,6 +188,7 @@ const defaultConfig: Config = {
     ensureStreakProtection: true,
     autoClaimPunchcardRewards: false,
     skipNonPointTasks: true,
+    accountDelay: { min: '1min', max: '3min' },
     workers: {
         doDailySet: true,
         doMorePromotions: true,
@@ -169,7 +216,7 @@ const defaultConfig: Config = {
         maxBonusSearches: 110,
         parallelSearching: true,
         clusterSearch: true,
-        queryEngines: ['google', 'wikipedia', 'wikirandom', 'hackernews', 'reddit', 'local', 'customCN'],
+        queryEngines: ['google', 'wikipedia', 'wikirandom', 'hackernews', 'reddit', 'local'],
         searchResultVisitTime: '10sec',
         searchDelay: { min: '30sec', max: '1min' },
         readDelay: { min: '30sec', max: '1min' }

@@ -12,6 +12,18 @@ function resolveConfigPath(projectRoot) {
     return candidates.find(p => fs.existsSync(p)) ?? path.join(projectRoot, 'config.json')
 }
 
+async function loadConfigSync(projectRoot, override) {
+    const modPath = override || path.join(projectRoot, 'dist', 'util', 'ConfigSync.js')
+    if (!override && !fs.existsSync(modPath)) return null
+    try {
+        return await import(pathToFileURL(path.resolve(modPath)).href)
+    } catch (error) {
+        throw new Error(
+            `Could not load ConfigSync module at ${modPath}: ${error instanceof Error ? error.message : String(error)}`
+        )
+    }
+}
+
 async function loadBotValidator(projectRoot, override) {
     const modPath = override || path.join(projectRoot, 'dist', 'util', 'Validator.js')
     if (!override && !fs.existsSync(modPath)) return null
@@ -62,6 +74,15 @@ function validateNumberOrString(value, path, errors) {
     }
 }
 
+function validateDelay(value, path, errors) {
+    if (!isObject(value)) {
+        errors.push(`${path} must be an object`)
+        return
+    }
+    if ('min' in value) validateNumberOrString(value.min, `${path}.min`, errors)
+    if ('max' in value) validateNumberOrString(value.max, `${path}.max`, errors)
+}
+
 function validateLogFilter(value, path, errors) {
     if (!isObject(value)) {
         errors.push(`${path} must be an object`)
@@ -94,6 +115,7 @@ function structuralValidate(cfg) {
     if ('activities' in cfg) validateBooleanObject(cfg.activities, 'activities', errors)
     if ('experimental' in cfg) validateBooleanObject(cfg.experimental, 'experimental', errors)
     if ('globalTimeout' in cfg) validateNumberOrString(cfg.globalTimeout, 'globalTimeout', errors)
+    if ('accountDelay' in cfg) validateDelay(cfg.accountDelay, 'accountDelay', errors)
 
     if ('searchSettings' in cfg) {
         if (!isObject(cfg.searchSettings)) {
@@ -132,13 +154,7 @@ function structuralValidate(cfg) {
             }
             for (const delayKey of ['searchDelay', 'readDelay']) {
                 if (!(delayKey in search)) continue
-                const delay = search[delayKey]
-                if (!isObject(delay)) {
-                    errors.push(`searchSettings.${delayKey} must be an object`)
-                    continue
-                }
-                if ('min' in delay) validateNumberOrString(delay.min, `searchSettings.${delayKey}.min`, errors)
-                if ('max' in delay) validateNumberOrString(delay.max, `searchSettings.${delayKey}.max`, errors)
+                validateDelay(search[delayKey], `searchSettings.${delayKey}`, errors)
             }
         }
     }
@@ -206,6 +222,34 @@ export function deepMerge(base, patch) {
         out[k] = v && typeof v === 'object' && !Array.isArray(v) ? deepMerge(out[k], v) : v
     }
     return out
+}
+
+// Compares the current config.json against config.example.json.
+// Returns dotted key-paths present in the example but missing from the
+// user's file - the same check entrypoint.sh runs on container start, now
+// available on demand from the API/dashboard (e.g. GET /config/diff).
+export async function diffConfig(projectRoot, { validatorModule } = {}) {
+    const mod = await loadConfigSync(projectRoot, validatorModule)
+    if (!mod) throw new Error('ConfigSync module not found - run `npm run build`.')
+    const { data: config } = readConfig(projectRoot)
+    const example = mod.readJson(mod.resolveExamplePath(projectRoot))
+    return { addedKeys: mod.diffKeyPaths(config, example) }
+}
+
+// Fills in any keys missing from config.json using config.example.json's
+// values, without touching existing user values, and writes the result back
+// (with a .bak backup via writeConfigAtomic). Intended for a gated endpoint
+// like POST /config/sync, behind API_ALLOW_CONFIG_WRITE.
+export async function syncMissingDefaults(projectRoot, { validatorModule } = {}) {
+    const mod = await loadConfigSync(projectRoot, validatorModule)
+    if (!mod) throw new Error('ConfigSync module not found - run `npm run build`.')
+    const { data: config } = readConfig(projectRoot)
+    const example = mod.readJson(mod.resolveExamplePath(projectRoot))
+    const { merged, addedKeys } = mod.mergeMissingDefaults(config, example)
+    if (addedKeys.length > 0) {
+        writeConfigAtomic(projectRoot, merged)
+    }
+    return { addedKeys, patched: addedKeys.length > 0 }
 }
 
 export function readConfig(projectRoot) {
