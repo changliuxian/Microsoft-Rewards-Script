@@ -43,7 +43,7 @@ const DelaySchema = z
     })
 
 const QueryEngineSchema = z.union([
-    z.enum(['google', 'wikipedia', 'wikirandom', 'hackernews', 'reddit', 'local']),
+    z.enum(['google', 'wikipedia', 'wikirandom', 'hackernews', 'reddit', 'local', 'customCN']),
     z
         .string()
         .regex(/^rss(\.[A-Za-z0-9_-]+){0,2}$/, 'Invalid rss selector (use rss, rss.<site>, or rss.<site>.<endpoint>)')
@@ -216,7 +216,7 @@ const defaultConfig: Config = {
         maxBonusSearches: 110,
         parallelSearching: true,
         clusterSearch: true,
-        queryEngines: ['google', 'wikipedia', 'wikirandom', 'hackernews', 'reddit', 'local'],
+        queryEngines: ['google', 'wikipedia', 'wikirandom', 'hackernews', 'reddit', 'local', 'customCN'],
         searchResultVisitTime: '10sec',
         searchDelay: { min: '30sec', max: '1min' },
         readDelay: { min: '30sec', max: '1min' }
