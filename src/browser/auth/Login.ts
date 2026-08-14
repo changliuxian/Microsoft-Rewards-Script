@@ -17,6 +17,7 @@ import type { Account } from '../../interface/Account'
 type LoginState =
     | 'EMAIL_INPUT'
     | 'PASSWORD_INPUT'
+    | 'USE_PASSWORD'
     | 'SIGN_IN_ANOTHER_WAY'
     | 'SIGN_IN_ANOTHER_WAY_EMAIL'
     | 'SIGN_IN_ANOTHER_WAY_PASSWORDLESS'
@@ -24,12 +25,13 @@ type LoginState =
     | 'PASSKEY_VIDEO'
     | 'KMSI_PROMPT'
     | 'LOGGED_IN'
+    | 'EMAIL_VERIFICATION_INPUT'
     | 'RECOVERY_EMAIL_INPUT'
     | 'ACCOUNT_LOCKED'
     | 'ERROR_ALERT'
     | '2FA_TOTP'
     | 'LOGIN_PASSWORDLESS'
-    | 'PRIMARY_SIGN_IN'
+    | 'PASSWORDLESS_SEND_CODE'
     | 'OTP_CODE_ENTRY'
     | 'UNKNOWN'
     | 'CHROMEWEBDATA_ERROR'
@@ -54,11 +56,13 @@ export class Login {
     private readonly selectors = {
         primaryButton: 'button[data-testid="primaryButton"]',
         secondaryButton: 'button[data-testid="secondaryButton"]',
+        usePasswordOption: '[data-testid="viewFooter"] [role="button"]',
         signInTile: '[data-testid="tile"]',
         emailIcon: '[data-testid="tile"]:has(svg path[d*="M5.25 4h13.5a3.25"])',
         emailIconOld: 'img[data-testid="accessibleImg"][src*="picker_verify_email"]',
         passwordlessOptionOld: 'img[data-testid="accessibleImg"][src*="picker_remote_ngc"]',
         recoveryEmail: '[data-testid="proof-confirmation"]',
+        emailVerificationInput: 'input#proof-confirmation-email-input',
         passwordIcon: '[data-testid="tile"]:has(svg path[d*="M11.78 10.22a.75.75"])',
         accountLocked: '#serviceAbuseLandingTitle',
         errorAlert: 'div[role="alert"]',
@@ -198,6 +202,7 @@ export class Login {
             [this.selectors.passwordEntry, 'PASSWORD_INPUT'],
             [this.selectors.emailEntry, 'EMAIL_INPUT'],
             [this.selectors.recoveryEmail, 'RECOVERY_EMAIL_INPUT'],
+            [this.selectors.emailVerificationInput, 'EMAIL_VERIFICATION_INPUT'],
             [this.selectors.kmsiVideo, 'KMSI_PROMPT'],
             [this.selectors.passKeyVideo, 'PASSKEY_VIDEO'],
             [this.selectors.passKeyError, 'PASSKEY_ERROR'],
@@ -230,15 +235,37 @@ export class Login {
             results.push('SIGN_IN_ANOTHER_WAY_PASSWORDLESS')
         }
 
-        const [identityBanner, primaryButton, passwordEntry] = await Promise.all([
+        const [identityBanner, primaryButton, passwordEntry, usePasswordOption] = await Promise.all([
             this.checkSelector(page, this.selectors.identityBanner),
             this.checkSelector(page, this.selectors.primaryButton),
-            this.checkSelector(page, this.selectors.passwordEntry)
+            this.checkSelector(page, this.selectors.passwordEntry),
+            this.checkSelector(page, this.selectors.usePasswordOption)
         ])
 
-        if (identityBanner && primaryButton && !passwordEntry && !results.includes('2FA_TOTP')) {
-            this.bot.logger.debug(this.bot.isMobile, 'DETECT-STATE', 'Primary sign-in action detected')
-            results.push('PRIMARY_SIGN_IN')
+        if (
+            identityBanner &&
+            primaryButton &&
+            usePasswordOption &&
+            !passwordEntry &&
+            !results.includes('2FA_TOTP') &&
+            !results.includes('RECOVERY_EMAIL_INPUT') &&
+            !results.includes('EMAIL_VERIFICATION_INPUT')
+        ) {
+            this.bot.logger.debug(this.bot.isMobile, 'DETECT-STATE', 'Password sign-in fallback action detected')
+            results.push('USE_PASSWORD')
+        }
+
+        if (
+            identityBanner &&
+            primaryButton &&
+            !usePasswordOption &&
+            !passwordEntry &&
+            !results.includes('2FA_TOTP') &&
+            !results.includes('RECOVERY_EMAIL_INPUT') &&
+            !results.includes('EMAIL_VERIFICATION_INPUT')
+        ) {
+            this.bot.logger.debug(this.bot.isMobile, 'DETECT-STATE', 'Passwordless "Send Code" action detected')
+            results.push('PASSWORDLESS_SEND_CODE')
         }
 
         let foundStates = results.filter((s): s is LoginState => s !== null)
@@ -267,12 +294,14 @@ export class Login {
             'LOGIN_PASSWORDLESS',
             'PASSWORD_INPUT',
             'EMAIL_INPUT',
+            'EMAIL_VERIFICATION_INPUT',
             'RECOVERY_EMAIL_INPUT',
             'SIGN_IN_ANOTHER_WAY_PASSWORDLESS',
             'SIGN_IN_ANOTHER_WAY', // Prefer password option over email code
             'SIGN_IN_ANOTHER_WAY_EMAIL',
             'OTP_CODE_ENTRY',
-            'PRIMARY_SIGN_IN',
+            'USE_PASSWORD',
+            'PASSWORDLESS_SEND_CODE',
             '2FA_TOTP'
         ]
 
@@ -442,9 +471,18 @@ export class Login {
                 return true
             }
 
-            case 'PRIMARY_SIGN_IN': {
-                // Microsoft's preferred sign-in action is the primary button. For RemoteNGC/passwordless
-                // accounts this sends the Authenticator request; the resulting challenge has stable test IDs.
+            case 'USE_PASSWORD': {
+                this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Password sign-in option available, selecting it')
+                const clicked = await this.bot.browser.utils.ghostClick(page, this.selectors.usePasswordOption)
+                if (!clicked) {
+                    this.bot.logger.warn(this.bot.isMobile, 'LOGIN', 'Could not select password sign-in option')
+                    return false
+                }
+                await this.waitForIdle(page, 'after selecting password sign-in')
+                return true
+            }
+
+            case 'PASSWORDLESS_SEND_CODE': {
                 this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Continuing with primary sign-in method')
                 const clicked = await this.bot.browser.utils.ghostClick(page, this.selectors.primaryButton)
                 if (!clicked) {
@@ -590,6 +628,19 @@ export class Login {
                 return true
             }
 
+            case 'EMAIL_VERIFICATION_INPUT': {
+                this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Email verification input detected')
+                await this.waitForIdle(page, 'on email verification page')
+                this.bot.logger.info(this.bot.isMobile, 'LOGIN', 'Initiating email-code verification handler')
+                await this.codeLogin.handle(page)
+                this.bot.logger.info(
+                    this.bot.isMobile,
+                    'LOGIN',
+                    'Email-code verification handler completed successfully'
+                )
+                return true
+            }
+
             case 'CHROMEWEBDATA_ERROR': {
                 this.bot.logger.warn(this.bot.isMobile, 'LOGIN', 'chromewebdata error detected, attempting recovery')
                 try {
@@ -676,9 +727,6 @@ export class Login {
                     'OTP code entry page detected; returning to sign-in method selection'
                 )
 
-                // Footer links are localized and their meaning changes between Microsoft login views.
-                // The back button has a stable id and safely returns us to method selection, where the
-                // structural priority logic can prefer Authenticator/password over an email code.
                 if (!(await this.tryClick(page, this.selectors.backButton, 'Back button'))) {
                     this.bot.logger.warn(this.bot.isMobile, 'LOGIN', 'Back button not found on OTP page')
                     return false
