@@ -44,6 +44,10 @@ export interface StreakState {
     isCurrentDayCompleted: boolean
     isEnabled: boolean
     dailyPoints: number[]
+    activationOfferId: string | null
+    activationHash: string | null
+    activationActivityType: number | null
+    destinationUrl: string | null
 }
 
 export interface StreakProtectionState {
@@ -276,7 +280,8 @@ export default class ReactFunc {
                     obj.attributes && typeof obj.attributes === 'object'
                         ? (obj.attributes as Record<string, unknown>)
                         : null
-                const activityTypeValue = obj.activityType ?? obj.activity_type ?? attributes?.activity_type
+                const activityTypeValue =
+                    obj.activityType ?? obj.activity_type ?? attributes?.activityType ?? attributes?.activity_type
                 const parsedActivityType = Number(activityTypeValue)
                 const promotionalValue = obj.isPromotional ?? attributes?.promotional
                 const isPromotional =
@@ -366,7 +371,23 @@ export default class ReactFunc {
                     totalDays: (o.totalDays as number) ?? 0,
                     isCurrentDayCompleted: (o.isCurrentDayCompleted as boolean | undefined) === true,
                     isEnabled: (o.isEnabled as boolean | undefined) === true,
-                    dailyPoints: o.dailyPoints as number[]
+                    dailyPoints: o.dailyPoints as number[],
+                    activationOfferId:
+                        typeof o.activationOfferId === 'string' && o.activationOfferId !== '$undefined'
+                            ? o.activationOfferId
+                            : null,
+                    activationHash:
+                        typeof o.activationHash === 'string' && o.activationHash !== '$undefined'
+                            ? o.activationHash
+                            : null,
+                    activationActivityType: (() => {
+                        const parsed = Number(o.activationActivityType)
+                        return Number.isInteger(parsed) && parsed > 0 ? parsed : null
+                    })(),
+                    destinationUrl:
+                        typeof o.destinationUrl === 'string' && o.destinationUrl !== '$undefined'
+                            ? o.destinationUrl
+                            : null
                 }))
 
             // de-dupe on partner
@@ -476,22 +497,29 @@ export default class ReactFunc {
     }
 
     public routerStateTree(segment: string): string {
+        const refreshFlag = 4096
         const tree = [
             '',
             {
                 children: [
                     '(nav)',
                     {
-                        children: [segment, { children: ['__PAGE__', {}, null, null, 0] }, null, null, 0]
+                        children: [
+                            segment,
+                            { children: ['PAGE', {}, null, null, refreshFlag] },
+                            null,
+                            null,
+                            refreshFlag
+                        ]
                     },
                     null,
                     null,
-                    0
+                    refreshFlag
                 ]
             },
             null,
             null,
-            16
+            refreshFlag + 16
         ]
         return encodeURIComponent(JSON.stringify(tree))
     }
