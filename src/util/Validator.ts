@@ -44,7 +44,7 @@ const DelaySchema = z
     })
 
 const QueryEngineSchema = z.union([
-    z.enum(['google', 'wikipedia', 'wikirandom', 'hackernews', 'reddit', 'local', 'customCN']),
+    z.enum(['google', 'wikipedia', 'wikirandom', 'hackernews', 'reddit', 'local']),
     z
         .string()
         .regex(/^rss(\.[A-Za-z0-9_-]+){0,2}$/, 'Invalid rss selector (use rss, rss.<site>, or rss.<site>.<endpoint>)')
@@ -150,9 +150,10 @@ export const ConfigSchema = z.object({
         .object({
             apiSearch: z.boolean().default(false),
             apiSearchOnBing: z.boolean().default(false),
-            blockMedia: z.boolean().default(false)
+            blockMedia: z.boolean().default(false),
+            edgeBrowsing: z.boolean().default(false)
         })
-        .default({ apiSearch: false, apiSearchOnBing: false, blockMedia: false }),
+        .default({ apiSearch: false, apiSearchOnBing: false, blockMedia: false, edgeBrowsing: false }),
     debugLogs: z.boolean(),
     proxy: z.object({
         queryEngine: z.boolean(),
@@ -282,7 +283,7 @@ const defaultConfig: Config = {
         maxBonusSearches: 110,
         parallelSearching: true,
         clusterSearch: true,
-        queryEngines: ['google', 'wikipedia', 'wikirandom', 'hackernews', 'reddit', 'local', 'customCN'],
+        queryEngines: ['google', 'wikipedia', 'wikirandom', 'hackernews', 'reddit', 'local'],
         searchResultVisitTime: '10sec',
         searchDelay: { min: '30sec', max: '1min' },
         readDelay: { min: '30sec', max: '1min' }
@@ -290,7 +291,8 @@ const defaultConfig: Config = {
     experimental: {
         apiSearch: false,
         apiSearchOnBing: false,
-        blockMedia: false
+        blockMedia: false,
+        edgeBrowsing: false
     },
     debugLogs: false,
     proxy: { queryEngine: true, ignoreCertificateErrors: false },
