@@ -597,7 +597,11 @@ export class QueryCore {
 
     private async getCustomCNTrends(): Promise<string[]> {
         try {
-            this.bot.logger.debug(this.bot.isMobile, 'SEARCH-CN-TRENDS', 'Generating search queries from custom CN source')
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                'SEARCH-CN-TRENDS',
+                'Generating search queries from custom CN source'
+            )
 
             const request: HttpRequestConfig = {
                 url: 'http://192.168.31.214:6688/douyin?limit=100&cache=false',
