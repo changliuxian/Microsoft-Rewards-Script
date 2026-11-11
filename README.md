@@ -92,11 +92,25 @@ logging tags.
 
 ### Tracking upstream
 
-[`.github/workflows/upstream-rebase-check.yml`](.github/workflows/upstream-rebase-check.yml)
-replays this branch's own commits onto `TheNetsky/Microsoft-Rewards-Script@v5`
-every day and on each push to `v5`. It never pushes: when the replay would
-conflict it opens one `upstream-rebase` issue with the conflicted paths and the
-replayed commits, and it closes that issue again once the replay is clean.
+[`.github/workflows/upstream-sync.yml`](.github/workflows/upstream-sync.yml)
+merges `TheNetsky/Microsoft-Rewards-Script@v5` into `v5` every day and on each
+push to `v5`, so the CN patches ride on top of a current upstream. The merge is
+pushed only after the merged tree builds, lints and formats cleanly. A conflict,
+a failing check or a rejected push stops the sync without pushing and opens one
+`upstream-sync` issue; that issue closes itself once a later run succeeds. Run
+it by hand with **Actions → Upstream sync → Run workflow**, where `dry_run: true`
+reports without pushing.
+
+### Promoting to main
+
+[`.github/workflows/promote-to-main.yml`](.github/workflows/promote-to-main.yml)
+runs after every Upstream sync run and on each push to `v5`, then merges `v5`
+into `main` and pushes the result, so `main` always mirrors the synced fork. In
+the steady state the merge changes nothing and is pushed without a rebuild; when
+`main` carries its own commits, the merged tree is built, linted and
+format-checked first. A conflict or a failing check keeps `main` untouched and
+opens one `main-promotion` issue, which closes itself once a later run succeeds.
+`main` is only ever merged into, never used as a source.
 
 ## Sessions
 

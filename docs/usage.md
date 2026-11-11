@@ -403,25 +403,52 @@ self-hosted hot-topic board and turns each headline into a `trend` topic.
 }
 ```
 
-#### Keeping the fork rebased
+#### Keeping the fork current
 
-[`.github/workflows/upstream-rebase-check.yml`](../.github/workflows/upstream-rebase-check.yml)
-fetches `TheNetsky/Microsoft-Rewards-Script@v5`, replays this branch's own
-commits on top of it and reports the result:
+[`.github/workflows/upstream-sync.yml`](../.github/workflows/upstream-sync.yml)
+merges `TheNetsky/Microsoft-Rewards-Script@v5` into `v5` and reports the result:
 
-| Result         | Meaning                                                           |
-| -------------- | ----------------------------------------------------------------- |
-| `current`      | The branch already contains the upstream head.                    |
-| `clean`        | The replay applies without conflicts; nothing is pushed.          |
-| `conflict`     | An `upstream-rebase` issue is opened or refreshed with the paths. |
-| `unrelated`    | No common history with upstream; nothing to replay.               |
-| `fetch-failed` | The upstream ref could not be fetched; the run is skipped.        |
+| Merge state    | Meaning                                                         |
+| -------------- | --------------------------------------------------------------- |
+| `current`      | The branch already contains the upstream head.                  |
+| `merged`       | A merge commit was created; verification and push follow.       |
+| `conflict`     | An `upstream-sync` issue is opened or refreshed with the paths. |
+| `unrelated`    | No common history with upstream; nothing to merge.              |
+| `fetch-failed` | The upstream ref could not be fetched; the run is skipped.      |
 
-The issue closes itself as soon as a later run reports `clean` or `current`.
-Run it manually with **Actions → Upstream rebase check → Run workflow**; the
+After a merge the workflow runs `npm ci`, `npm run build`, `npm run check:api`,
+`npm run lint` and `npm run format:check` on the merged tree. Only a tree that
+passes all of them is pushed, so a broken upstream change never lands on `v5`
+silently. A `conflict` or a failing check leaves the branch untouched; resolve
+it locally, keep the CN behaviour, and the next run picks up where it stopped.
+
+The issue closes itself as soon as a later run reaches `current` or `pushed`.
+Run it manually with **Actions → Upstream sync → Run workflow**; the
 `upstream_repo`, `upstream_branch` and `fork_branch` inputs override the
-defaults for one run, which is how the conflict path can be rehearsed against a
-scratch branch.
+defaults for one run, and `dry_run: true` reports without pushing — that is how
+the conflict path can be rehearsed against a scratch branch.
+
+#### Publishing to main
+
+[`.github/workflows/promote-to-main.yml`](../.github/workflows/promote-to-main.yml)
+runs on every completed Upstream sync run and on each push to `v5`, merges `v5`
+into `main` and pushes the result:
+
+| Promotion state | Meaning                                                         |
+| --------------- | --------------------------------------------------------------- |
+| `current`       | `main` already contains `v5`; nothing is pushed.                |
+| `identical`     | The merge changed nothing; the result is pushed without checks. |
+| `diverged`      | `main` has its own commits; the merged tree is verified first.  |
+| `conflict`      | A `main-promotion` issue is opened or refreshed with the paths. |
+| `broken`        | The merged tree fails a check; `main` stays untouched.          |
+| `unrelated`     | No common history with `main`; nothing to merge.                |
+
+`main` is a mirror, never a source: the workflow merges `v5` into it and stops
+there, so the CN patches only ever move in one direction. The full check suite
+runs only for `diverged`, because in the steady state the merged tree is
+byte-identical to the already-verified `v5`. The issue closes itself once a
+later run reaches `current` or `pushed`. Manual runs accept `source_branch`,
+`target_branch` and `dry_run`.
 
 ### Experiments and proxies
 

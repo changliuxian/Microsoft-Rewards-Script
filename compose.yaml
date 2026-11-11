@@ -7,9 +7,9 @@ services:
         restart: unless-stopped
         stop_grace_period: 60s
         volumes:
-            - /vol1/1000/Rewards/config:/usr/src/microsoft-rewards-script/config
-            - /vol1/1000/Rewards/diagnostics:/usr/src/microsoft-rewards-script/diagnostics
-            - /vol1/1000/Rewards/sessions:/usr/src/microsoft-rewards-script/sessions
+            - ./config:/usr/src/microsoft-rewards-script/config
+            - ./diagnostics:/usr/src/microsoft-rewards-script/diagnostics
+            - ./sessions:/usr/src/microsoft-rewards-script/sessions
         env_file:
             # Load account credentials from the .env file (ACCOUNT_1_EMAIL, optional ACCOUNT_1_PASSWORD, etc.)
             - path: .env
