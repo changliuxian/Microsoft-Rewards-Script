@@ -1,0 +1,61 @@
+name: Prune stale container tags
+
+on:
+    workflow_dispatch:
+
+permissions:
+    contents: read
+    packages: write
+
+jobs:
+    prune:
+        name: Delete container versions outside the kept tags
+        runs-on: ubuntu-24.04
+        timeout-minutes: 10
+        env:
+            KEEP: 5.0.0,5,latest
+            PACKAGE: microsoft-rewards-script
+        steps:
+            - name: List and delete
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  OWNER: ${{ github.repository_owner }}
+              run: |
+                  set -uo pipefail
+                  api="${GITHUB_API_URL:-https://api.github.com}"
+                  echo "keep=${KEEP} package=${PACKAGE} owner=${OWNER}"
+                  page=1
+                  while [ "$page" -le 10 ]; do
+                      url="${api}/users/${OWNER}/packages/container/${PACKAGE}/versions?per_page=100&page=${page}"
+                      response="$(curl -sS -w '\n%{http_code}' -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' "$url")"
+                      code="$(printf '%s' "$response" | tail -n1)"
+                      body="$(printf '%s' "$response" | sed '$d')"
+                      echo "GET page=${page} -> HTTP ${code}"
+                      if [ "$code" != '200' ]; then
+                          printf '%s\n' "$body"
+                          exit 1
+                      fi
+                      count="$(printf '%s' "$body" | jq 'length')"
+                      echo "  versions on page: ${count}"
+                      [ "$count" = '0' ] && break
+                      printf '%s' "$body" | jq -c '.[] | {id, tags: (.metadata.container.tags // [])}' | while read -r item; do
+                          id="$(printf '%s' "$item" | jq -r '.id')"
+                          tags="$(printf '%s' "$item" | jq -r '.tags | join(",")')"
+                          keep=false
+                          IFS=',' read -ra wanted <<< "${KEEP}"
+                          IFS=',' read -ra have <<< "${tags}"
+                          for t in "${have[@]}"; do
+                              for w in "${wanted[@]}"; do
+                                  [ "$t" = "$w" ] && keep=true
+                              done
+                          done
+                          if [ "$keep" = 'true' ]; then
+                              echo "  keep ${id} [${tags}]"
+                              continue
+                          fi
+                          del="${api}/users/${OWNER}/packages/container/${PACKAGE}/versions/${id}"
+                          dcode="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' "$del")"
+                          echo "  delete ${id} [${tags}] -> HTTP ${dcode}"
+                      done
+                      page=$((page + 1))
+                  done
