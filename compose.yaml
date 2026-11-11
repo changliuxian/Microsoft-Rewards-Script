@@ -2,7 +2,7 @@ services:
     microsoft-rewards-script:
         build:
             context: .
-        image: netsky
+        image: microsoft-rewards-script:local
         container_name: microsoft-rewards-script
         restart: unless-stopped
         stop_grace_period: 60s
