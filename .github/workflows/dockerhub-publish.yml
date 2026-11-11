@@ -132,44 +132,82 @@ jobs:
                       echo "state=current" >> "$GITHUB_OUTPUT"
                       exit 0
                   fi
-                  exists=false
-                  if docker buildx imagetools inspect "${IMAGE}:latest" >/dev/null 2>&1; then
-                      exists=true
-                  fi
-
                   # The counter lives in the registry: the next version is one past the
                   # highest existing v5.0.N tag, so a fresh repository starts at v5.0.0.
+                  # The registry answers for private repositories once the access token is
+                  # exchanged for a pull token; hub.docker.com is only a fallback because it
+                  # reports 404 for repositories it cannot show anonymously.
                   auth=()
                   if [ -n "${DOCKERHUB_USERNAME:-}" ] && [ -n "${DOCKERHUB_TOKEN:-}" ]; then
                       auth=(-u "${DOCKERHUB_USERNAME}:${DOCKERHUB_TOKEN}")
                   fi
-                  highest=-1
+                  : > tags.txt
                   queried=false
-                  page=1
-                  while [ "$page" -le 10 ]; do
-                      response="$(
-                          curl -fsS --max-time 30 "${auth[@]}" \
-                              "https://hub.docker.com/v2/repositories/${namespace}/${repository}/tags?page_size=100&page=${page}" \
-                              2>/dev/null || true
-                      )"
-                      if [ -z "$response" ]; then
-                          break
-                      fi
-                      queried=true
-                      highest="$(
-                          printf '%s' "$response" \
-                              | jq -r --argjson highest "$highest" '
-                                  [.results[]?.name | select(test("^v5\\.0\\.[0-9]+$")) | sub("^v5\\.0\\."; "") | tonumber]
-                                  + [$highest]
-                                  | max
-                              '
-                      )"
-                      next="$(printf '%s' "$response" | jq -r '.next // ""')"
-                      if [ -z "$next" ] || [ "$next" = 'null' ]; then
-                          break
-                      fi
-                      page=$((page + 1))
-                  done
+                  token="$(
+                      curl -fsS --max-time 30 "${auth[@]}" \
+                          "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${namespace}/${repository}:pull" \
+                          2>/dev/null | jq -r '.token // ""' 2>/dev/null || true
+                  )"
+                  if [ -n "$token" ]; then
+                      page=1
+                      last=''
+                      while [ "$page" -le 10 ]; do
+                          url="https://registry-1.docker.io/v2/${namespace}/${repository}/tags/list?n=1000"
+                          if [ -n "$last" ]; then
+                              url="${url}&last=${last}"
+                          fi
+                          response="$(curl -fsS --max-time 30 -H "Authorization: Bearer ${token}" "$url" 2>/dev/null || true)"
+                          if [ -z "$response" ]; then
+                              break
+                          fi
+                          queried=true
+                          printf '%s' "$response" | jq -r '.tags[]?' >> tags.txt
+                          count="$(printf '%s' "$response" | jq -r '(.tags // []) | length')"
+                          if [ "$count" -lt 1000 ]; then
+                              break
+                          fi
+                          last="$(printf '%s' "$response" | jq -r '.tags[-1] // ""')"
+                          if [ -z "$last" ]; then
+                              break
+                          fi
+                          page=$((page + 1))
+                      done
+                  fi
+                  if [ "$queried" != 'true' ]; then
+                      page=1
+                      while [ "$page" -le 10 ]; do
+                          response="$(
+                              curl -fsS --max-time 30 "${auth[@]}" \
+                                  "https://hub.docker.com/v2/repositories/${namespace}/${repository}/tags?page_size=100&page=${page}" \
+                                  2>/dev/null || true
+                          )"
+                          if [ -z "$response" ]; then
+                              break
+                          fi
+                          queried=true
+                          printf '%s' "$response" | jq -r '.results[]?.name' >> tags.txt
+                          next="$(printf '%s' "$response" | jq -r '.next // ""')"
+                          if [ -z "$next" ] || [ "$next" = 'null' ]; then
+                              break
+                          fi
+                          page=$((page + 1))
+                      done
+                  fi
+                  sort -u -o tags.txt tags.txt
+                  echo "Published tags: $(tr '\n' ' ' < tags.txt)"
+                  exists=false
+                  if [ -s tags.txt ]; then
+                      exists=true
+                  elif docker buildx imagetools inspect "${IMAGE}:latest" >/dev/null 2>&1; then
+                      exists=true
+                  fi
+                  highest="$(
+                      jq -R -s -r --argjson highest -1 '
+                          [split("\n")[] | select(test("^v5\\.0\\.[0-9]+$")) | sub("^v5\\.0\\."; "") | tonumber]
+                          + [$highest]
+                          | max
+                      ' tags.txt
+                  )"
 
                   # Never restart the counter over existing tags: if the tag list cannot be
                   # read while the repository already has images, stop instead of guessing.
