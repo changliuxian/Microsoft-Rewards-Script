@@ -96,8 +96,13 @@ jobs:
                               continue
                           fi
                           del="${api}/users/${OWNER}/packages/container/${PACKAGE}/versions/${id}"
-                          dcode="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' "$del")"
+                          dresponse="$(curl -sS -w '\n%{http_code}' -X DELETE -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' "$del")"
+                          dcode="$(printf '%s' "$dresponse" | tail -n1)"
+                          dbody="$(printf '%s' "$dresponse" | sed '$d')"
                           echo "  delete ${id} [${tags}] -> HTTP ${dcode}"
+                          if [ "$dcode" != '204' ] && [ -n "$dbody" ]; then
+                              printf '    %s\n' "$dbody"
+                          fi
                       done < versions.jsonl
                       page=$((page + 1))
                   done
