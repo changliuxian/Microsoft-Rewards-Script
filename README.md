@@ -90,6 +90,14 @@ This fork carries the CN adaptation on top of upstream v5:
 See [CN deployments](docs/usage.md#cn-deployments) for the endpoint contract and
 logging tags.
 
+### Tracking upstream
+
+[`.github/workflows/upstream-rebase-check.yml`](.github/workflows/upstream-rebase-check.yml)
+replays this branch's own commits onto `TheNetsky/Microsoft-Rewards-Script@v5`
+every day and on each push to `v5`. It never pushes: when the replay would
+conflict it opens one `upstream-rebase` issue with the conflicted paths and the
+replayed commits, and it closes that issue again once the replay is clean.
+
 ## Sessions
 
 To sign in manually on a desktop with a visible browser:

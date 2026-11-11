@@ -403,6 +403,26 @@ self-hosted hot-topic board and turns each headline into a `trend` topic.
 }
 ```
 
+#### Keeping the fork rebased
+
+[`.github/workflows/upstream-rebase-check.yml`](../.github/workflows/upstream-rebase-check.yml)
+fetches `TheNetsky/Microsoft-Rewards-Script@v5`, replays this branch's own
+commits on top of it and reports the result:
+
+| Result         | Meaning                                                           |
+| -------------- | ----------------------------------------------------------------- |
+| `current`      | The branch already contains the upstream head.                    |
+| `clean`        | The replay applies without conflicts; nothing is pushed.          |
+| `conflict`     | An `upstream-rebase` issue is opened or refreshed with the paths. |
+| `unrelated`    | No common history with upstream; nothing to replay.               |
+| `fetch-failed` | The upstream ref could not be fetched; the run is skipped.        |
+
+The issue closes itself as soon as a later run reports `clean` or `current`.
+Run it manually with **Actions → Upstream rebase check → Run workflow**; the
+`upstream_repo`, `upstream_branch` and `fork_branch` inputs override the
+defaults for one run, which is how the conflict path can be rehearsed against a
+scratch branch.
+
 ### Experiments and proxies
 
 Set experiment fields inside `experimental`; all default to `false`.
