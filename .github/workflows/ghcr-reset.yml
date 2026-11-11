@@ -1,0 +1,36 @@
+name: Reset the container package
+
+on:
+    workflow_dispatch:
+
+permissions:
+    contents: read
+    packages: write
+
+env:
+    PACKAGE: microsoft-rewards-script
+
+jobs:
+    reset:
+        name: Delete the container package
+        runs-on: ubuntu-24.04
+        timeout-minutes: 10
+        steps:
+            - name: Delete the package so the release can rebuild 5.0.0
+              env:
+                  GH_TOKEN: ${{ github.token }}
+              run: |
+                  set -uo pipefail
+                  api="${GITHUB_API_URL:-https://api.github.com}"
+                  response="$(curl -sS -w '\n%{http_code}' -X DELETE \
+                      -H "Authorization: Bearer ${GH_TOKEN}" \
+                      -H 'Accept: application/vnd.github+json' \
+                      -H 'X-GitHub-Api-Version: 2022-11-28' \
+                      "${api}/user/packages/container/${PACKAGE}")"
+                  code="$(printf '%s' "$response" | tail -n1)"
+                  echo "DELETE package -> HTTP ${code}"
+                  printf '%s' "$response" | sed '$d' | head -c 400
+                  echo
+                  if [ "$code" != '204' ] && [ "$code" != '404' ]; then
+                      exit 1
+                  fi
