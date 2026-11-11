@@ -10,9 +10,14 @@ services:
             - /vol1/1000/Rewards/config:/usr/src/microsoft-rewards-script/config
             - /vol1/1000/Rewards/diagnostics:/usr/src/microsoft-rewards-script/diagnostics
             - /vol1/1000/Rewards/sessions:/usr/src/microsoft-rewards-script/sessions
+            # Alternative to env_file: mount the file instead and every bot run re-reads
+            # it, so an edit applies without recreating the container. The file must exist
+            # before the first `up`, otherwise Docker creates a directory in its place.
+            #- /vol1/1000/Rewards/.env:/usr/src/microsoft-rewards-script/.env:ro
         env_file:
-            # Load account credentials from the .env file (ACCOUNT_1_EMAIL, optional ACCOUNT_1_PASSWORD, etc.)
-            - path: .env
+            # Docker reads this file when the container is created; recreate the
+            # container after editing accounts.
+            - path: /vol1/1000/Rewards/.env
         environment:
             # ── Scheduler ──────────────────────────────────────
             TZ: 'Asia/Shanghai'
