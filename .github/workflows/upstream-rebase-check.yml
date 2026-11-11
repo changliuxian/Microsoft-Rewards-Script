@@ -1,0 +1,236 @@
+name: Upstream rebase check
+
+# Keeps the CN fork honest: replays this branch's own commits on top of the
+# tracked upstream branch and reports only when that replay would conflict.
+# The check never pushes. It opens one tracking issue on conflict and closes it
+# again once the replay is clean.
+
+on:
+    schedule:
+        # Daily at 03:17 UTC, off the hour to avoid the busy scheduler window.
+        - cron: '17 3 * * *'
+    push:
+        branches: [v5]
+    workflow_dispatch:
+        inputs:
+            upstream_branch:
+                description: Upstream branch to track
+                required: false
+                default: v5
+                type: string
+            fork_branch:
+                description: Fork branch that carries the CN patches
+                required: false
+                default: v5
+                type: string
+
+permissions:
+    contents: read
+    issues: write
+
+concurrency:
+    group: upstream-rebase-check
+    cancel-in-progress: true
+
+env:
+    UPSTREAM_REPO: TheNetsky/Microsoft-Rewards-Script
+    ISSUE_LABEL: upstream-rebase
+    GIT_EDITOR: 'true'
+
+jobs:
+    rebase-check:
+        name: Replay fork commits on upstream
+        runs-on: ubuntu-24.04
+        timeout-minutes: 10
+        steps:
+            # `inputs` is not available in workflow-level env, so resolve it here.
+            - name: Resolve settings
+              id: cfg
+              shell: bash
+              env:
+                  INPUT_UPSTREAM_BRANCH: ${{ inputs.upstream_branch }}
+                  INPUT_FORK_BRANCH: ${{ inputs.fork_branch }}
+              run: |
+                  set -euo pipefail
+                  upstream_branch="${INPUT_UPSTREAM_BRANCH:-v5}"
+                  fork_branch="${INPUT_FORK_BRANCH:-v5}"
+                  {
+                      echo "UPSTREAM_BRANCH=${upstream_branch}"
+                      echo "FORK_BRANCH=${fork_branch}"
+                      echo "ISSUE_TITLE=Upstream rebase conflict on ${fork_branch}"
+                  } >> "$GITHUB_ENV"
+                  echo "upstream_branch=${upstream_branch}" >> "$GITHUB_OUTPUT"
+                  echo "fork_branch=${fork_branch}" >> "$GITHUB_OUTPUT"
+                  echo "Tracking ${UPSTREAM_REPO}@${upstream_branch} from ${fork_branch}."
+
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  ref: ${{ steps.cfg.outputs.fork_branch }}
+                  fetch-depth: 0
+                  persist-credentials: false
+
+            - name: Attempt the rebase
+              id: rebase
+              shell: bash
+              run: |
+                  set -uo pipefail
+                  git config user.name 'github-actions[bot]'
+                  git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+                  git remote remove upstream 2>/dev/null || true
+                  git remote add upstream "${UPSTREAM_URL:-https://github.com/${UPSTREAM_REPO}.git}"
+                  if ! git fetch --no-tags --prune upstream \
+                      "+refs/heads/${UPSTREAM_BRANCH}:refs/remotes/upstream/${UPSTREAM_BRANCH}"; then
+                      echo "state=fetch-failed" >> "$GITHUB_OUTPUT"
+                      echo "Could not fetch ${UPSTREAM_REPO}@${UPSTREAM_BRANCH}; skipping the replay."
+                      exit 0
+                  fi
+                  upstream_sha=$(git rev-parse "upstream/${UPSTREAM_BRANCH}")
+                  echo "upstream_sha=${upstream_sha}" >> "$GITHUB_OUTPUT"
+                  echo "Upstream ${UPSTREAM_REPO}@${UPSTREAM_BRANCH} = ${upstream_sha}"
+
+                  if ! base=$(git merge-base "upstream/${UPSTREAM_BRANCH}" HEAD); then
+                      echo "state=unrelated" >> "$GITHUB_OUTPUT"
+                      echo "No common history with upstream; nothing to replay."
+                      exit 0
+                  fi
+                  echo "base=${base}" >> "$GITHUB_OUTPUT"
+
+                  read -r behind ahead < <(git rev-list --left-right --count "upstream/${UPSTREAM_BRANCH}...HEAD")
+                  echo "behind=${behind}" >> "$GITHUB_OUTPUT"
+                  echo "ahead=${ahead}" >> "$GITHUB_OUTPUT"
+                  echo "Upstream is ${behind} commit(s) ahead; ${ahead} local commit(s) to replay."
+
+                  git log --reverse --oneline "upstream/${UPSTREAM_BRANCH}..HEAD" > replay.txt || true
+
+                  if [ "$behind" = "0" ]; then
+                      echo "state=current" >> "$GITHUB_OUTPUT"
+                      echo "Already on top of upstream."
+                      exit 0
+                  fi
+
+                  if git rebase "upstream/${UPSTREAM_BRANCH}" > rebase.log 2>&1; then
+                      echo "state=clean" >> "$GITHUB_OUTPUT"
+                      echo "Rebase would apply cleanly."
+                      git diff --stat "${upstream_sha}..HEAD" > result.txt || true
+                      exit 0
+                  fi
+
+                  echo "state=conflict" >> "$GITHUB_OUTPUT"
+                  git diff --name-only --diff-filter=U > conflicted.txt || true
+                  git status --short >> conflicted.txt || true
+                  git rebase --abort || true
+                  echo "Rebase conflicts on:"
+                  cat conflicted.txt
+
+            - name: Report to the tracking issue
+              if: always() && steps.rebase.outputs.state != ''
+              shell: bash
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  STATE: ${{ steps.rebase.outputs.state }}
+                  BEHIND: ${{ steps.rebase.outputs.behind }}
+                  AHEAD: ${{ steps.rebase.outputs.ahead }}
+                  BASE: ${{ steps.rebase.outputs.base }}
+                  UPSTREAM_SHA: ${{ steps.rebase.outputs.upstream_sha }}
+              run: |
+                  set -euo pipefail
+                  api="${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}"
+                  run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+                  curl_json() {
+                      curl -sS -H "Authorization: Bearer ${GH_TOKEN}" \
+                          -H 'Accept: application/vnd.github+json' \
+                          -H 'Content-Type: application/json' \
+                          -H 'X-GitHub-Api-Version: 2022-11-28' "$@"
+                  }
+
+                  # The label must exist before an issue can carry it; a 422 means it already does.
+                  curl_json -o /dev/null -X POST "${api}/labels" \
+                      -d "{\"name\":\"${ISSUE_LABEL}\",\"color\":\"d93f0b\",\"description\":\"Upstream rebase conflicts on the CN fork\"}" \
+                      || true
+
+                  existing=$(curl_json "${api}/issues?labels=${ISSUE_LABEL}&state=open&per_page=100" \
+                      | jq -r --arg title "${ISSUE_TITLE}" '.[] | select(.title == $title) | .number' \
+                      | head -n 1) || true
+
+                  if [ "${STATE}" != "conflict" ]; then
+                      echo "No conflict (state=${STATE})."
+                      if [ -n "${existing}" ]; then
+                          curl_json -o /dev/null -X POST "${api}/issues/${existing}/comments" \
+                              -d "{\"body\":\"\`${FORK_BRANCH}\` rebases cleanly again (state: \`${STATE}\`, upstream ahead by ${BEHIND:-0}). Closing. [Run](${run_url})\"}"
+                          curl_json -o /dev/null -X PATCH "${api}/issues/${existing}" -d '{"state":"closed"}'
+                          echo "Closed issue #${existing}."
+                      fi
+                      exit 0
+                  fi
+
+                  {
+                      echo "Replaying \`${FORK_BRANCH}\` onto \`${UPSTREAM_REPO}@${UPSTREAM_BRANCH}\` conflicts."
+                      echo
+                      echo "| Field | Value |"
+                      echo "| --- | --- |"
+                      echo "| Upstream head | \`${UPSTREAM_SHA}\` |"
+                      echo "| Merge base | \`${BASE:-none}\` |"
+                      echo "| Upstream commits to absorb | ${BEHIND:-?} |"
+                      echo "| Local commits to replay | ${AHEAD:-?} |"
+                      echo "| Run | [${GITHUB_RUN_ID}](${run_url}) |"
+                      echo
+                      echo "**Conflicted paths**"
+                      echo
+                      echo '```'
+                      head -n 80 conflicted.txt 2>/dev/null || echo '(none captured)'
+                      echo '```'
+                      echo
+                      echo "**Local commits replayed**"
+                      echo
+                      echo '```'
+                      head -n 40 replay.txt 2>/dev/null || echo '(none)'
+                      echo '```'
+                      echo
+                      echo "**Rebase output (tail)**"
+                      echo
+                      echo '```'
+                      tail -n 40 rebase.log 2>/dev/null || echo '(none)'
+                      echo '```'
+                      echo
+                      echo "Resolve locally with:"
+                      echo
+                      echo '```sh'
+                      echo "git fetch upstream && git rebase upstream/${UPSTREAM_BRANCH}"
+                      echo '```'
+                      echo
+                      echo "This issue closes itself once the replay is clean again."
+                  } > body.md
+
+                  payload=$(jq -n --rawfile body body.md --arg title "${ISSUE_TITLE}" \
+                      '{title: $title, body: $body, labels: [env.ISSUE_LABEL]}')
+
+                  if [ -n "${existing}" ]; then
+                      curl_json -o /dev/null -X PATCH "${api}/issues/${existing}" -d "${payload}"
+                      echo "Updated issue #${existing}."
+                  else
+                      curl_json -o /dev/null -X POST "${api}/issues" -d "${payload}"
+                      echo "Opened a new tracking issue."
+                  fi
+
+            - name: Summarise
+              if: always()
+              shell: bash
+              env:
+                  STATE: ${{ steps.rebase.outputs.state }}
+                  UPSTREAM_SHA: ${{ steps.rebase.outputs.upstream_sha }}
+                  BEHIND: ${{ steps.rebase.outputs.behind }}
+                  AHEAD: ${{ steps.rebase.outputs.ahead }}
+              run: |
+                  set -uo pipefail
+                  {
+                      echo "### Upstream rebase check"
+                      echo
+                      echo "| Field | Value |"
+                      echo "| --- | --- |"
+                      echo "| State | \`${STATE:-unknown}\` |"
+                      echo "| Fork branch | \`${FORK_BRANCH}\` |"
+                      echo "| Upstream | \`${UPSTREAM_REPO}@${UPSTREAM_BRANCH}\` |"
+                      echo "| Upstream head | \`${UPSTREAM_SHA:-n/a}\` |"
+                      echo "| Behind / ahead | ${BEHIND:-0} / ${AHEAD:-0} |"
+                  } >> "$GITHUB_STEP_SUMMARY"
