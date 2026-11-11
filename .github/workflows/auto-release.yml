@@ -190,7 +190,7 @@ jobs:
                     args+=(--prerelease)
                   fi
                   gh release create "${args[@]}"
-            - name: Update only this major's stable Docker channel
+            - name: Point the stable channels at this release
               if: needs.prepare.outputs.prerelease != 'true'
               env:
                   IMAGE: ${{ needs.prepare.outputs.image }}
@@ -198,3 +198,4 @@ jobs:
                   DIGEST: ${{ steps.build.outputs.digest || steps.existing.outputs.digest }}
               run: |
                   docker buildx imagetools create --tag "$IMAGE:$MAJOR" "$IMAGE@$DIGEST"
+                  docker buildx imagetools create --tag "$IMAGE:latest" "$IMAGE@$DIGEST"
