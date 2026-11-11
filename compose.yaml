@@ -2,6 +2,12 @@ services:
     microsoft-rewards-script:
         build:
             context: .
+            # CN mirrors for the local build; the Dockerfile defaults to the official
+            # endpoints, which is what the GitHub-hosted image build uses.
+            args:
+                NODE_IMAGE: docker.m.daocloud.io/library/node:24-bookworm-slim
+                NPM_REGISTRY: https://registry.npmmirror.com
+                APT_MIRROR: mirrors.aliyun.com
         image: microsoft-rewards-script:local
         container_name: microsoft-rewards-script
         restart: unless-stopped
