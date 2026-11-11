@@ -41,9 +41,19 @@ export class QueryEngine {
             wikirandom: () => this.sources.getWikipediaRandom(language),
             hackernews: () => this.sources.getHackerNewsTopics(),
             reddit: () => this.sources.getRedditTopics(),
-            local: () => this.sources.getLocalQueryList(language)
+            local: () => this.sources.getLocalQueryList(language),
+            customCN: () => this.sources.getCustomCNTrends(language, country)
         }
         const selected = [...new Set(sourceOrder)]
+        // CN locale prefers the self-hosted hot-topic board even when the config omits it.
+        if (country === 'CN' && !selected.includes('customCN')) {
+            selected.unshift('customCN')
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                'QUERY-MANAGER',
+                `CN locale detected, prepending customCN | language=${language} | country=${country}`
+            )
+        }
         const isRss = (source: string) => source === 'rss' || source.startsWith('rss.')
         const coreSources = selected.filter(source => !isRss(source)) as QueryEngineName[]
         const rssSelectors = selected.filter(isRss)

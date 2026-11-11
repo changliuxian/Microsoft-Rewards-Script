@@ -5,6 +5,7 @@ import { XMLParser, XMLValidator } from 'fast-xml-parser'
 import { URLs } from '../../../constants/urls'
 import { RSS_FEEDS } from '../../../constants/rssFeeds'
 import type {
+    CNTrends,
     HackerNewsResponse,
     RedditListing,
     WikipediaRandomResponse,
@@ -422,6 +423,50 @@ export class QuerySources {
                 this.bot.isMobile,
                 'SEARCH-LOCAL-QUERY-LIST',
                 `Failed reading search-queries.json | ${String(error)}`
+            )
+            return []
+        }
+    }
+
+    async getCustomCNTrends(language = 'zh', country = 'CN'): Promise<QueryTopic[]> {
+        const origin: QueryOrigin = {
+            source: 'customCN',
+            sourceUrl: URLs.queryEngine.customCNTrends(),
+            language,
+            country
+        }
+        // The self-hosted CN board only carries Simplified Chinese hot topics for the CN region.
+        try {
+            const response = await this.request<CNTrends>(origin, language, country)
+            const data = response.data
+            if (!data || data.code !== 200) {
+                this.bot.logger.warn(
+                    this.bot.isMobile,
+                    'SEARCH-CN-TRENDS',
+                    `Custom CN source returned non-200 code | code=${String(data?.code)} | ${formatQueryOrigin(origin)}`
+                )
+                return []
+            }
+            const items = Array.isArray(data.data) ? data.data : []
+            const topics = items
+                .filter(item => typeof item?.title === 'string')
+                .map((item, sourceRank) => ({
+                    text: item.title.toLowerCase(),
+                    ...origin,
+                    kind: 'trend' as QueryKind,
+                    sourceRank
+                }))
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                'SEARCH-CN-TRENDS',
+                `Got ${topics.length} topics from custom CN source | ${formatQueryOrigin(origin)}`
+            )
+            return topics
+        } catch (error) {
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                'SEARCH-CN-TRENDS',
+                `Request failed | ${formatQueryOrigin(origin)} | ${String(error)}`
             )
             return []
         }

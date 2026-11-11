@@ -38,7 +38,7 @@ export const defaultConfig: Config = {
         parallelSearching: true,
         clusterSearch: true,
         useAccountLocale: true,
-        queryEngines: ['google', 'local', 'wikipedia', 'rss.googleNews'],
+        queryEngines: ['google', 'local', 'customCN', 'wikipedia', 'rss.googleNews'],
         searchResultVisitTime: '10sec',
         searchDelay: { min: '30sec', max: '1min' },
         readDelay: { min: '30sec', max: '1min' }

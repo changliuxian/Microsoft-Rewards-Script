@@ -49,3 +49,27 @@ export interface WikipediaRandomResponse {
         }>
     }
 }
+
+export interface CNTrendItem {
+    id: number | string
+    title: string
+    desc?: string
+    cover?: string
+    author?: string
+    timestamp?: number | string | null
+    hot?: number
+    url?: string
+    mobileUrl?: string
+}
+
+export interface CNTrends {
+    code: number
+    name?: string
+    title?: string
+    type?: string
+    link?: string
+    total?: number
+    updateTime?: string
+    fromCache?: boolean
+    data: CNTrendItem[]
+}

@@ -326,20 +326,20 @@ Inside `activities`:
 
 Set these fields inside `searchSettings`.
 
-| Setting                   | Default                                              | Purpose                                                         | Environment override                                            |
-| ------------------------- | ---------------------------------------------------- | --------------------------------------------------------------- | --------------------------------------------------------------- |
-| `parallelSearching`       | `true`                                               | Overlap desktop and mobile work.                                | `CONFIG_SEARCH_PARALLEL`                                        |
-| `searchDelay`             | `30sec–1min`                                         | Gap between searches.                                           | `CONFIG_SEARCH_DELAY_MIN` / `CONFIG_SEARCH_DELAY_MAX`           |
-| `readDelay`               | `30sec–1min`                                         | Article-reading pause.                                          | `CONFIG_SEARCH_READ_DELAY_MIN` / `CONFIG_SEARCH_READ_DELAY_MAX` |
-| `maxSearchOnBingAttempts` | `3`                                                  | Explore searches per offer; positive whole number.              | `CONFIG_SEARCH_ON_BING_MAX_ATTEMPTS`                            |
-| `maxBonusSearches`        | `110`                                                | Bonus search ceiling; `0` disables, maximum `1000`.             | `CONFIG_SEARCH_MAX_BONUS_SEARCHES`                              |
-| `runOnZeroPoints`         | `false`                                              | Allow bounded searches when no search points remain.            | `CONFIG_SEARCH_RUN_ON_ZERO_POINTS`                              |
-| `clusterSearch`           | `true`                                               | Add related Bing suggestions to each topic.                     | `CONFIG_SEARCH_CLUSTER`                                         |
-| `useAccountLocale`        | `true`                                               | Prefer query language/country derived from the account country. | `CONFIG_SEARCH_USE_ACCOUNT_LOCALE`                              |
-| `queryEngines`            | `["google", "local", "wikipedia", "rss.googleNews"]` | Topic sources; at least one.                                    | `CONFIG_SEARCH_QUERY_ENGINES`                                   |
-| `scrollRandomResults`     | `false`                                              | Optional results-page scrolling in browser mode.                | `CONFIG_SEARCH_SCROLL_RANDOM`                                   |
-| `clickRandomResults`      | `false`                                              | Optional result visits in browser mode.                         | `CONFIG_SEARCH_CLICK_RANDOM`                                    |
-| `searchResultVisitTime`   | `"10sec"`                                            | Time spent on an optional result visit.                         | `CONFIG_SEARCH_VISIT_TIME`                                      |
+| Setting                   | Default                                                          | Purpose                                                         | Environment override                                            |
+| ------------------------- | ---------------------------------------------------------------- | --------------------------------------------------------------- | --------------------------------------------------------------- |
+| `parallelSearching`       | `true`                                                           | Overlap desktop and mobile work.                                | `CONFIG_SEARCH_PARALLEL`                                        |
+| `searchDelay`             | `30sec–1min`                                                     | Gap between searches.                                           | `CONFIG_SEARCH_DELAY_MIN` / `CONFIG_SEARCH_DELAY_MAX`           |
+| `readDelay`               | `30sec–1min`                                                     | Article-reading pause.                                          | `CONFIG_SEARCH_READ_DELAY_MIN` / `CONFIG_SEARCH_READ_DELAY_MAX` |
+| `maxSearchOnBingAttempts` | `3`                                                              | Explore searches per offer; positive whole number.              | `CONFIG_SEARCH_ON_BING_MAX_ATTEMPTS`                            |
+| `maxBonusSearches`        | `110`                                                            | Bonus search ceiling; `0` disables, maximum `1000`.             | `CONFIG_SEARCH_MAX_BONUS_SEARCHES`                              |
+| `runOnZeroPoints`         | `false`                                                          | Allow bounded searches when no search points remain.            | `CONFIG_SEARCH_RUN_ON_ZERO_POINTS`                              |
+| `clusterSearch`           | `true`                                                           | Add related Bing suggestions to each topic.                     | `CONFIG_SEARCH_CLUSTER`                                         |
+| `useAccountLocale`        | `true`                                                           | Prefer query language/country derived from the account country. | `CONFIG_SEARCH_USE_ACCOUNT_LOCALE`                              |
+| `queryEngines`            | `["google", "local", "customCN", "wikipedia", "rss.googleNews"]` | Topic sources; at least one.                                    | `CONFIG_SEARCH_QUERY_ENGINES`                                   |
+| `scrollRandomResults`     | `false`                                                          | Optional results-page scrolling in browser mode.                | `CONFIG_SEARCH_SCROLL_RANDOM`                                   |
+| `clickRandomResults`      | `false`                                                          | Optional result visits in browser mode.                         | `CONFIG_SEARCH_CLICK_RANDOM`                                    |
+| `searchResultVisitTime`   | `"10sec"`                                                        | Time spent on an optional result visit.                         | `CONFIG_SEARCH_VISIT_TIME`                                      |
 
 **Search behavior**
 
@@ -362,6 +362,7 @@ Set these fields inside `searchSettings`.
 | `wikirandom`                          | Random Wikipedia topics.                                  |
 | `hackernews`                          | Hacker News topics.                                       |
 | `reddit`                              | Reddit topics.                                            |
+| `customCN`                            | CN hot-topic board from a self-hosted service.            |
 | `rss`                                 | Regional Google feeds and configured RSS feeds.           |
 | `rss.googleTrends` / `rss.googleNews` | Regional Google trends/news.                              |
 | `rss.bbc`                             | All configured BBC feeds.                                 |

@@ -24,7 +24,7 @@ export interface Config {
 
 export type RewardsMode = 'api' | 'browser'
 
-export type QueryEngine = 'google' | 'wikipedia' | 'wikirandom' | 'hackernews' | 'reddit' | 'local'
+export type QueryEngine = 'google' | 'wikipedia' | 'wikirandom' | 'hackernews' | 'reddit' | 'local' | 'customCN'
 
 export type RssFeedSelector = 'rss' | `rss.${string}`
 export type QueryEngineEntry = QueryEngine | RssFeedSelector

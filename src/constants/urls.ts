@@ -15,6 +15,9 @@ const HACKER_NEWS = 'https://hn.algolia.com'
 // Public Bing API app id, gotten from mitm, but bound to change?
 const BING_SUGGESTIONS_APPID = '6D0A9B8C5100E9ECC7E11A104ADD76C10219804B'
 
+// Self-hosted CN hot-topic service (douyin board). Replace with your own host/port.
+const CN_TRENDS = 'http://192.168.31.214:6688'
+
 export const URLs = {
     github: {
         searchOnBingQueries:
@@ -67,7 +70,8 @@ export const URLs = {
         wikipediaRandom: (langCode: string) =>
             `https://${langCode}.wikipedia.org/w/api.php?action=query&format=json&list=random&rnnamespace=0&rnlimit=20`,
         hackerNews: `${HACKER_NEWS}/api/v1/search?tags=front_page&hitsPerPage=50`,
-        reddit: (subreddit: string) => `${REDDIT}/r/${subreddit}.json?limit=50`
+        reddit: (subreddit: string) => `${REDDIT}/r/${subreddit}.json?limit=50`,
+        customCNTrends: (limit = 100) => `${CN_TRENDS}/douyin?limit=${encodeURIComponent(String(limit))}&cache=false`
     }
 } as const
 

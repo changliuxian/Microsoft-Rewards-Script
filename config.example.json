@@ -1,6 +1,6 @@
 {
     "sessionPath": "sessions",
-    "headless": false,
+    "headless": true,
     "clusters": 1,
     "rewardsMode": "browser",
     "errorDiagnostics": false,
@@ -45,7 +45,7 @@
         "parallelSearching": true,
         "clusterSearch": true,
         "useAccountLocale": true,
-        "queryEngines": ["google", "local", "wikipedia", "rss.googleNews"],
+        "queryEngines": ["google", "local", "customCN", "wikipedia", "rss.googleNews"],
         "searchResultVisitTime": "10sec",
         "searchDelay": {
             "min": "30sec",

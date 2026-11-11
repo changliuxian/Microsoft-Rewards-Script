@@ -2,20 +2,20 @@ services:
     microsoft-rewards-script:
         build:
             context: .
-        image: microsoft-rewards-script:local
+        image: netsky
         container_name: microsoft-rewards-script
         restart: unless-stopped
         stop_grace_period: 60s
         volumes:
-            - ./config:/usr/src/microsoft-rewards-script/config
-            - ./diagnostics:/usr/src/microsoft-rewards-script/diagnostics
-            - ./sessions:/usr/src/microsoft-rewards-script/sessions
+            - /vol1/1000/Rewards/config:/usr/src/microsoft-rewards-script/config
+            - /vol1/1000/Rewards/diagnostics:/usr/src/microsoft-rewards-script/diagnostics
+            - /vol1/1000/Rewards/sessions:/usr/src/microsoft-rewards-script/sessions
         env_file:
             # Load account credentials from the .env file (ACCOUNT_1_EMAIL, optional ACCOUNT_1_PASSWORD, etc.)
             - path: .env
         environment:
             # ── Scheduler ──────────────────────────────────────
-            TZ: 'America/Toronto'
+            TZ: 'Asia/Shanghai'
             NODE_ENV: 'production'
             # CRON_SCHEDULE is the *initial* default. It will run as default unless changed by the API
             # API schedule changes are saved to ./config/schedule.json, delete
@@ -53,6 +53,8 @@ services:
             #CONFIG_EXPERIMENTAL_EDGE_BROWSING: 'false'
             # Only enable for a TLS-intercepting proxy whose certificate cannot be trusted normally.
             #CONFIG_PROXY_IGNORE_CERTIFICATE_ERRORS: 'false'
+            # CN deployments: force the custom CN hot-topic source and account locale.
+            #CONFIG_SEARCH_QUERY_ENGINES: 'customCN,google,local,wikipedia,rss.googleNews'
             #... add additional configuration overrides as needed
 
         # ── Control API port mapping ──────────────────────────────
@@ -63,7 +65,7 @@ services:
         healthcheck:
             test: ['CMD-SHELL', 'scripts/docker/healthcheck.sh']
             interval: 60s
-            timeout: 5s
+            timeout: 10s
             retries: 3
             start_period: 30s
 
