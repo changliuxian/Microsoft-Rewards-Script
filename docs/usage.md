@@ -379,6 +379,30 @@ RSS selectors follow `rss`, `rss.<site>` or `rss.<site>.<feed>`; see the [feed l
 [SEARCH-BING] Searching | search=1 | query="alexander zverev" | language=nl | source=rss.googleTrends | progressCheckEvery=4
 ```
 
+#### CN deployments
+
+This fork adds a `customCN` source for accounts in the CN region. It reads a
+self-hosted hot-topic board and turns each headline into a `trend` topic.
+
+- The endpoint is `CN_TRENDS` in [src/constants/urls.ts](../src/constants/urls.ts);
+  change the host/port to your own service. It must answer
+  `GET /douyin?limit=100&cache=false` with `{"code": 200, "data": [{"title": "..."}]}`.
+- When the resolved country is `CN`, `customCN` is prepended to `queryEngines`
+  automatically, even if the config omits it. Other sources keep running in
+  parallel, and the usual local-query fallback still applies when every source
+  comes back empty.
+- A non-`200` payload or a failed request logs under `SEARCH-CN-TRENDS` and
+  contributes no topics; the run continues on the remaining sources.
+- `src/data/search-queries.json` carries a bundled `zh` query list, so `local`
+  also works for a Chinese account.
+
+```json
+"searchSettings": {
+    "useAccountLocale": true,
+    "queryEngines": ["google", "local", "customCN", "wikipedia", "rss.googleNews"]
+}
+```
+
 ### Experiments and proxies
 
 Set experiment fields inside `experimental`; all default to `false`.

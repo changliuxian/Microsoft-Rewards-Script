@@ -72,6 +72,24 @@ Edit [config.json](config.example.json) before starting a run.
 
 See the full [settings reference](docs/usage.md#settings-reference) for all options.
 
+## CN deployment notes
+
+This fork carries the CN adaptation on top of upstream v5:
+
+- `customCN` query source — a self-hosted hot-topic board (default
+  `http://192.168.31.214:6688/douyin`, see `CN_TRENDS` in
+  [src/constants/urls.ts](src/constants/urls.ts)). It is prepended automatically
+  when the account country resolves to `CN`, and a bundled `zh` list backs the
+  `local` source.
+- CN-friendly defaults in [config.example.json](config.example.json) and
+  [env.example](env.example): `headless: true`, `ACCOUNT_n_GEO_LOCALE=CN`,
+  `ACCOUNT_n_LANG_CODE=zh-CN` and `queryEngines` including `customCN`.
+- [Dockerfile](Dockerfile) and [compose.yaml](compose.yaml) use daocloud/npmmirror
+  and aliyun mirrors, `TZ: Asia/Shanghai` and the headless-shell Chromium only.
+
+See [CN deployments](docs/usage.md#cn-deployments) for the endpoint contract and
+logging tags.
+
 ## Sessions
 
 To sign in manually on a desktop with a visible browser:
