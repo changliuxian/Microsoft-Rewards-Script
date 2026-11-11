@@ -1,0 +1,344 @@
+name: Upstream sync
+
+# Keeps the CN fork current: merges the tracked upstream branch into the fork
+# branch, verifies the merged tree, then pushes the result. A merge conflict or a
+# failing build stops the sync without pushing and opens one tracking issue; the
+# issue closes itself once a later run succeeds. A dry run reports without
+# pushing, which is how the conflict path can be rehearsed safely.
+
+on:
+    schedule:
+        # Daily at 03:17 UTC, off the hour to avoid the busy scheduler window.
+        - cron: '17 3 * * *'
+    push:
+        branches: [v5]
+    workflow_dispatch:
+        inputs:
+            upstream_repo:
+                description: Upstream repository to track
+                required: false
+                default: TheNetsky/Microsoft-Rewards-Script
+                type: string
+            upstream_branch:
+                description: Upstream branch to track
+                required: false
+                default: v5
+                type: string
+            fork_branch:
+                description: Fork branch that carries the CN patches
+                required: false
+                default: v5
+                type: string
+            dry_run:
+                description: Report only, never push
+                required: false
+                default: false
+                type: boolean
+
+permissions:
+    contents: write
+    issues: write
+
+concurrency:
+    group: upstream-sync
+    cancel-in-progress: false
+
+env:
+    UPSTREAM_REPO: TheNetsky/Microsoft-Rewards-Script
+    ISSUE_LABEL: upstream-sync
+    GIT_EDITOR: 'true'
+
+jobs:
+    sync:
+        name: Merge upstream into the CN fork
+        runs-on: ubuntu-24.04
+        timeout-minutes: 20
+        # A push made with GITHUB_TOKEN does not start new runs, so the sync
+        # cannot retrigger itself; the guard only matters if the token changes.
+        if: github.event_name != 'push' || github.actor != 'github-actions[bot]'
+        steps:
+            # `inputs` is not available in workflow-level env, so resolve it here.
+            - name: Resolve settings
+              id: cfg
+              shell: bash
+              env:
+                  INPUT_UPSTREAM_REPO: ${{ inputs.upstream_repo }}
+                  INPUT_UPSTREAM_BRANCH: ${{ inputs.upstream_branch }}
+                  INPUT_FORK_BRANCH: ${{ inputs.fork_branch }}
+                  INPUT_DRY_RUN: ${{ inputs.dry_run }}
+              run: |
+                  set -euo pipefail
+                  upstream_repo="${INPUT_UPSTREAM_REPO:-${UPSTREAM_REPO:-TheNetsky/Microsoft-Rewards-Script}}"
+                  upstream_branch="${INPUT_UPSTREAM_BRANCH:-v5}"
+                  fork_branch="${INPUT_FORK_BRANCH:-v5}"
+                  dry_run="${INPUT_DRY_RUN:-false}"
+                  {
+                      echo "UPSTREAM_REPO=${upstream_repo}"
+                      echo "UPSTREAM_BRANCH=${upstream_branch}"
+                      echo "FORK_BRANCH=${fork_branch}"
+                      echo "DRY_RUN=${dry_run}"
+                      echo "ISSUE_TITLE=Upstream sync blocked on ${fork_branch}"
+                  } >> "$GITHUB_ENV"
+                  echo "upstream_branch=${upstream_branch}" >> "$GITHUB_OUTPUT"
+                  echo "fork_branch=${fork_branch}" >> "$GITHUB_OUTPUT"
+                  echo "dry_run=${dry_run}" >> "$GITHUB_OUTPUT"
+                  echo "Tracking ${upstream_repo}@${upstream_branch} into ${fork_branch} (dry_run=${dry_run})."
+
+            # Credentials stay persisted so the push step can use them.
+            - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+              with:
+                  ref: ${{ steps.cfg.outputs.fork_branch }}
+                  fetch-depth: 0
+
+            - name: Merge upstream
+              id: sync
+              shell: bash
+              run: |
+                  set -uo pipefail
+                  git config user.name 'github-actions[bot]'
+                  git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+
+                  git remote remove upstream 2>/dev/null || true
+                  git remote add upstream "https://github.com/${UPSTREAM_REPO}.git"
+                  if ! git fetch --no-tags --prune upstream \
+                      "+refs/heads/${UPSTREAM_BRANCH}:refs/remotes/upstream/${UPSTREAM_BRANCH}"; then
+                      echo "state=fetch-failed" >> "$GITHUB_OUTPUT"
+                      echo "Could not fetch ${UPSTREAM_REPO}@${UPSTREAM_BRANCH}; skipping the sync."
+                      exit 0
+                  fi
+                  upstream_sha=$(git rev-parse "upstream/${UPSTREAM_BRANCH}")
+                  echo "upstream_sha=${upstream_sha}" >> "$GITHUB_OUTPUT"
+                  echo "Upstream ${UPSTREAM_REPO}@${UPSTREAM_BRANCH} = ${upstream_sha}"
+
+                  if ! base=$(git merge-base "upstream/${UPSTREAM_BRANCH}" HEAD); then
+                      echo "state=unrelated" >> "$GITHUB_OUTPUT"
+                      echo "No common history with upstream; nothing to merge."
+                      exit 0
+                  fi
+                  echo "base=${base}" >> "$GITHUB_OUTPUT"
+
+                  read -r behind ahead < <(git rev-list --left-right --count "upstream/${UPSTREAM_BRANCH}...HEAD")
+                  echo "behind=${behind}" >> "$GITHUB_OUTPUT"
+                  echo "ahead=${ahead}" >> "$GITHUB_OUTPUT"
+                  echo "Upstream is ${behind} commit(s) ahead; ${ahead} local commit(s) carried."
+
+                  git log --reverse --oneline "HEAD..upstream/${UPSTREAM_BRANCH}" > absorbed.txt || true
+                  git log --reverse --oneline "upstream/${UPSTREAM_BRANCH}..HEAD" > local.txt || true
+
+                  if [ "$behind" = "0" ]; then
+                      echo "state=current" >> "$GITHUB_OUTPUT"
+                      echo "Already up to date with upstream."
+                      exit 0
+                  fi
+
+                  if git merge --no-ff --no-edit "upstream/${UPSTREAM_BRANCH}" \
+                      -m "chore: merge ${UPSTREAM_REPO}@${UPSTREAM_BRANCH} into the CN fork" > merge.log 2>&1; then
+                      echo "state=merged" >> "$GITHUB_OUTPUT"
+                      echo "Merged ${behind} upstream commit(s); the CN patches stay on top."
+                      exit 0
+                  fi
+
+                  echo "state=conflict" >> "$GITHUB_OUTPUT"
+                  git diff --name-only --diff-filter=U > conflicted.txt || true
+                  git status --short >> conflicted.txt || true
+                  git merge --abort || true
+                  echo "Merge conflicts on:"
+                  cat conflicted.txt
+
+            - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+              if: steps.sync.outputs.state == 'merged'
+              with:
+                  node-version: 24
+                  cache: npm
+
+            - name: Verify the merged tree
+              id: verify
+              if: steps.sync.outputs.state == 'merged'
+              shell: bash
+              run: |
+                  set -uo pipefail
+                  if npm ci --include=dev --ignore-scripts > install.log 2>&1 \
+                      && npm run build > build.log 2>&1 \
+                      && npm run check:api > api.log 2>&1 \
+                      && npm run lint > lint.log 2>&1 \
+                      && npm run format:check > format.log 2>&1; then
+                      echo "state=verified" >> "$GITHUB_OUTPUT"
+                      echo "The merged tree builds, lints and formats cleanly."
+                      exit 0
+                  fi
+                  echo "state=broken" >> "$GITHUB_OUTPUT"
+                  echo "The merged tree failed verification; nothing is pushed."
+                  for log in install build api lint format; do
+                      if [ -s "${log}.log" ]; then
+                          echo "::group::${log}.log"
+                          tail -n 40 "${log}.log"
+                          echo "::endgroup::"
+                      fi
+                  done
+
+            - name: Push the merge
+              id: push
+              if: steps.verify.outputs.state == 'verified' && steps.cfg.outputs.dry_run != 'true'
+              shell: bash
+              run: |
+                  set -uo pipefail
+                  if git push origin "HEAD:refs/heads/${FORK_BRANCH}"; then
+                      echo "state=pushed" >> "$GITHUB_OUTPUT"
+                      echo "Pushed the merge to ${FORK_BRANCH}."
+                      exit 0
+                  fi
+                  echo "state=push-failed" >> "$GITHUB_OUTPUT"
+                  echo "The merge could not be pushed; check branch protection on ${FORK_BRANCH}."
+
+            - name: Report to the tracking issue
+              if: always() && steps.sync.outputs.state != ''
+              shell: bash
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  MERGE_STATE: ${{ steps.sync.outputs.state }}
+                  VERIFY_STATE: ${{ steps.verify.outputs.state }}
+                  PUSH_STATE: ${{ steps.push.outputs.state }}
+                  BEHIND: ${{ steps.sync.outputs.behind }}
+                  AHEAD: ${{ steps.sync.outputs.ahead }}
+                  BASE: ${{ steps.sync.outputs.base }}
+                  UPSTREAM_SHA: ${{ steps.sync.outputs.upstream_sha }}
+              run: |
+                  set -euo pipefail
+                  api="${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}"
+                  run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+                  curl_json() {
+                      curl -sS -H "Authorization: Bearer ${GH_TOKEN}" \
+                          -H 'Accept: application/vnd.github+json' \
+                          -H 'Content-Type: application/json' \
+                          -H 'X-GitHub-Api-Version: 2022-11-28' "$@"
+                  }
+
+                  state="${PUSH_STATE:-${VERIFY_STATE:-${MERGE_STATE}}}"
+                  echo "Final state: ${state}"
+
+                  # The label must exist before an issue can carry it; a 422 means it already does.
+                  curl_json -o /dev/null -X POST "${api}/labels" \
+                      -d "{\"name\":\"${ISSUE_LABEL}\",\"color\":\"d93f0b\",\"description\":\"Upstream sync needs a human\"}" \
+                      || true
+
+                  existing=$(curl_json "${api}/issues?labels=${ISSUE_LABEL}&state=open&per_page=100" \
+                      | jq -r --arg title "${ISSUE_TITLE}" '.[] | select(.title == $title) | .number' \
+                      | head -n 1) || true
+
+                  case "${state}" in
+                      current | pushed | verified)
+                          echo "Nothing to report (state=${state})."
+                          if [ -n "${existing}" ]; then
+                              curl_json -o /dev/null -X POST "${api}/issues/${existing}/comments" \
+                                  -d "{\"body\":\"\`${FORK_BRANCH}\` is in sync again (state: \`${state}\`). Closing. [Run](${run_url})\"}"
+                              curl_json -o /dev/null -X PATCH "${api}/issues/${existing}" -d '{"state":"closed"}'
+                              echo "Closed issue #${existing}."
+                          fi
+                          exit 0
+                          ;;
+                  esac
+
+                  {
+                      echo "Syncing \`${FORK_BRANCH}\` with \`${UPSTREAM_REPO}@${UPSTREAM_BRANCH}\` needs attention (state: \`${state}\`)."
+                      echo
+                      echo "| Field | Value |"
+                      echo "| --- | --- |"
+                      echo "| State | \`${state}\` |"
+                      echo "| Upstream head | \`${UPSTREAM_SHA:-n/a}\` |"
+                      echo "| Merge base | \`${BASE:-none}\` |"
+                      echo "| Upstream commits to absorb | ${BEHIND:-?} |"
+                      echo "| Local commits carried | ${AHEAD:-?} |"
+                      echo "| Dry run | \`${DRY_RUN}\` |"
+                      echo "| Run | [${GITHUB_RUN_ID}](${run_url}) |"
+                      echo
+                      case "${state}" in
+                          conflict)
+                              echo "**Conflicted paths**"
+                              echo
+                              echo '```'
+                              head -n 80 conflicted.txt 2>/dev/null || echo '(none captured)'
+                              echo '```'
+                              echo
+                              echo "The CN patches and the upstream change touch the same lines. Resolve the"
+                              echo "conflict locally, keep the CN behaviour, then push; the next run syncs again."
+                              echo
+                              echo '```sh'
+                              echo "git fetch upstream && git merge upstream/${UPSTREAM_BRANCH}"
+                              echo '```'
+                              ;;
+                          broken)
+                              echo "**The merged tree does not build**"
+                              echo
+                              echo "Upstream merged without conflicts, but the result fails a check, so nothing"
+                              echo "was pushed. The failing output is in the run log."
+                              ;;
+                          push-failed)
+                              echo "**The merge could not be pushed**"
+                              echo
+                              echo "The merge verified cleanly, but pushing to \`${FORK_BRANCH}\` was rejected."
+                              echo "Check branch protection or the workflow token permissions."
+                              ;;
+                          unrelated)
+                              echo "**No common history**"
+                              echo
+                              echo "\`${FORK_BRANCH}\` shares no ancestor with \`${UPSTREAM_REPO}@${UPSTREAM_BRANCH}\`."
+                              ;;
+                          fetch-failed)
+                              echo "**Upstream could not be fetched**"
+                              echo
+                              echo "\`${UPSTREAM_REPO}@${UPSTREAM_BRANCH}\` was unreachable; the sync was skipped."
+                              ;;
+                      esac
+                      echo
+                      echo "**Upstream commits to absorb**"
+                      echo
+                      echo '```'
+                      head -n 40 absorbed.txt 2>/dev/null || echo '(none)'
+                      echo '```'
+                      echo
+                      echo "**Local commits carried**"
+                      echo
+                      echo '```'
+                      head -n 40 local.txt 2>/dev/null || echo '(none)'
+                      echo '```'
+                      echo
+                      echo "This issue closes itself once a later run succeeds."
+                  } > body.md
+
+                  payload=$(jq -n --rawfile body body.md --arg title "${ISSUE_TITLE}" \
+                      '{title: $title, body: $body, labels: [env.ISSUE_LABEL]}')
+
+                  if [ -n "${existing}" ]; then
+                      curl_json -o /dev/null -X PATCH "${api}/issues/${existing}" -d "${payload}"
+                      echo "Updated issue #${existing}."
+                  else
+                      curl_json -o /dev/null -X POST "${api}/issues" -d "${payload}"
+                      echo "Opened a new tracking issue."
+                  fi
+
+            - name: Summarise
+              if: always()
+              shell: bash
+              env:
+                  MERGE_STATE: ${{ steps.sync.outputs.state }}
+                  VERIFY_STATE: ${{ steps.verify.outputs.state }}
+                  PUSH_STATE: ${{ steps.push.outputs.state }}
+                  UPSTREAM_SHA: ${{ steps.sync.outputs.upstream_sha }}
+                  BEHIND: ${{ steps.sync.outputs.behind }}
+                  AHEAD: ${{ steps.sync.outputs.ahead }}
+              run: |
+                  set -uo pipefail
+                  {
+                      echo "### Upstream sync"
+                      echo
+                      echo "| Field | Value |"
+                      echo "| --- | --- |"
+                      echo "| Merge | \`${MERGE_STATE:-unknown}\` |"
+                      echo "| Verify | \`${VERIFY_STATE:-skipped}\` |"
+                      echo "| Push | \`${PUSH_STATE:-skipped}\` |"
+                      echo "| Fork branch | \`${FORK_BRANCH:-?}\` |"
+                      echo "| Upstream | \`${UPSTREAM_REPO:-?}@${UPSTREAM_BRANCH:-?}\` |"
+                      echo "| Upstream head | \`${UPSTREAM_SHA:-n/a}\` |"
+                      echo "| Behind / ahead | ${BEHIND:-0} / ${AHEAD:-0} |"
+                      echo "| Dry run | \`${DRY_RUN:-false}\` |"
+                  } >> "$GITHUB_STEP_SUMMARY"

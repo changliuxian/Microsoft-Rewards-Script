@@ -92,11 +92,14 @@ logging tags.
 
 ### Tracking upstream
 
-[`.github/workflows/upstream-rebase-check.yml`](.github/workflows/upstream-rebase-check.yml)
-replays this branch's own commits onto `TheNetsky/Microsoft-Rewards-Script@v5`
-every day and on each push to `v5`. It never pushes: when the replay would
-conflict it opens one `upstream-rebase` issue with the conflicted paths and the
-replayed commits, and it closes that issue again once the replay is clean.
+[`.github/workflows/upstream-sync.yml`](.github/workflows/upstream-sync.yml)
+merges `TheNetsky/Microsoft-Rewards-Script@v5` into `v5` every day and on each
+push to `v5`, so the CN patches ride on top of a current upstream. The merge is
+pushed only after the merged tree builds, lints and formats cleanly. A conflict,
+a failing check or a rejected push stops the sync without pushing and opens one
+`upstream-sync` issue; that issue closes itself once a later run succeeds. Run
+it by hand with **Actions → Upstream sync → Run workflow**, where `dry_run: true`
+reports without pushing.
 
 ## Sessions
 
