@@ -3,7 +3,6 @@ const PLATFORM = 'https://prod.rewardsplatform.microsoft.com'
 const BING = 'https://www.bing.com'
 const LOGIN_LIVE = 'https://login.live.com'
 const LOGIN_MS = 'https://login.microsoftonline.com'
-const EDGE = 'https://edgeupdates.microsoft.com'
 
 // Query-engine
 const GOOGLE_TRENDS = 'https://trends.google.com'
@@ -12,15 +11,17 @@ const BING_APIS = 'https://www.bingapis.com'
 const WIKIMEDIA = 'https://wikimedia.org'
 const REDDIT = 'https://www.reddit.com'
 const HACKER_NEWS = 'https://hn.algolia.com'
-const CHROME_FOR_TESTING = 'https://cdn.jsdelivr.net'
 
 // Public Bing API app id, gotten from mitm, but bound to change?
 const BING_SUGGESTIONS_APPID = '6D0A9B8C5100E9ECC7E11A104ADD76C10219804B'
 
+// Self-hosted CN hot-topic service (douyin board). Replace with your own host/port.
+const CN_TRENDS = 'http://192.168.31.214:6688'
+
 export const URLs = {
     github: {
         searchOnBingQueries:
-            'https://raw.githubusercontent.com/TheNetsky/Microsoft-Rewards-Script/refs/heads/v4/src/functions/bing-search-activity-queries.json'
+            'https://raw.githubusercontent.com/TheNetsky/Microsoft-Rewards-Script/refs/heads/v5/src/data/bing-search-activity-queries.json'
     },
     rewards: {
         origin: REWARDS,
@@ -29,15 +30,15 @@ export const URLs = {
         userInfoApi: `${REWARDS}/api/getuserinfo`,
         // Offers page
         earn: `${REWARDS}/earn`,
-        earnStreaks: `${REWARDS}/earn?section=streaks`,
         dashboard: `${REWARDS}/dashboard`,
-        createUser: `${REWARDS}/createuser?idru=%2F&userScenarioId=anonsignin`,
+        userLogin: `${REWARDS}/auth/login`,
         quest: (parentOfferId: string) => `${REWARDS}/earn/quest/${parentOfferId}`,
         path: (path: string) => `${REWARDS}${path}`
     },
     platform: {
         origin: PLATFORM,
         me: (channel: string) => `${PLATFORM}/dapi/me?channel=${channel}&options=613`,
+        edgeProfile: `${PLATFORM}/dapi/me?channel=edge&options=Profile,Promotions`,
         activities: `${PLATFORM}/dapi/me/activities`
     },
     auth: {
@@ -49,26 +50,28 @@ export const URLs = {
     },
     bing: {
         origin: BING,
+        images: `${BING}/images`,
+        rewardsFlyoutPage: `${BING}/rewards/panelflyout?channel=bingflyout&partnerId=BingRewards&isDarkMode=0&ru=${encodeURIComponent(`${BING}/`)}`,
+        rewardsFlyoutUserInfo: `${BING}/rewards/panelflyout/getuserinfo?channel=BingFlyout&partnerId=BingRewards`,
+        rewardsFlyoutReportActivity: `${BING}/msrewards/api/v1/reportactivity`,
         search: (query: string, cvid: string) =>
             `${BING}/search?q=${encodeURIComponent(query)}&PC=U531&FORM=ANNTA1&cvid=${cvid}`
     },
-    edge: {
-        products: `${EDGE}/api/products`
-    },
     queryEngine: {
-        googleTrends: `${GOOGLE_TRENDS}/_/TrendsUi/data/batchexecute`,
-        bingSuggestions: (query: string, langCode: string) =>
-            `${BING_APIS}/api/v7/suggestions?q=${encodeURIComponent(query)}&appid=${BING_SUGGESTIONS_APPID}&cc=xl&setlang=${langCode}`,
-        bingRelated: (query: string) => `${BING_API}/osjson.aspx?query=${encodeURIComponent(query)}`,
+        googleTrends: (country: string) => `${GOOGLE_TRENDS}/trending/rss?geo=${encodeURIComponent(country)}`,
+        googleNews: (language: string, country: string, topic?: string) =>
+            `https://news.google.com/rss${topic ? `/headlines/section/topic/${topic.toUpperCase()}` : ''}?hl=${encodeURIComponent(language)}&gl=${encodeURIComponent(country)}&ceid=${encodeURIComponent(`${country}:${language.split('-')[0]}`)}`,
+        bingSuggestions: (query: string, langCode: string, country = 'US') =>
+            `${BING_APIS}/api/v7/suggestions?q=${encodeURIComponent(query)}&appid=${BING_SUGGESTIONS_APPID}&cc=${encodeURIComponent(country)}&setlang=${encodeURIComponent(langCode)}`,
+        bingRelated: (query: string, langCode = 'en', country = 'US') =>
+            `${BING_API}/osjson.aspx?query=${encodeURIComponent(query)}&cc=${encodeURIComponent(country)}&setlang=${encodeURIComponent(langCode)}`,
         wikipediaTop: (langCode: string, year: number, month: string, day: string) =>
             `${WIKIMEDIA}/api/rest_v1/metrics/pageviews/top/${langCode}.wikipedia/all-access/${year}/${month}/${day}`,
         wikipediaRandom: (langCode: string) =>
             `https://${langCode}.wikipedia.org/w/api.php?action=query&format=json&list=random&rnnamespace=0&rnlimit=20`,
         hackerNews: `${HACKER_NEWS}/api/v1/search?tags=front_page&hitsPerPage=50`,
-        reddit: (subreddit: string) => `${REDDIT}/r/${subreddit}.json?limit=50`
-    },
-    userAgent: {
-        chromeVersions: `${CHROME_FOR_TESTING}/gh/GoogleChromeLabs/chrome-for-testing@main/data/last-known-good-versions.json`
+        reddit: (subreddit: string) => `${REDDIT}/r/${subreddit}.json?limit=50`,
+        customCNTrends: (limit = 100) => `${CN_TRENDS}/douyin?limit=${encodeURIComponent(String(limit))}&cache=false`
     }
 } as const
 
