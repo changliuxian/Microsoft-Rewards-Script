@@ -1,17 +1,26 @@
-FROM docker.m.daocloud.io/library/node:24-bookworm-slim AS builder
+# Build arguments keep one Dockerfile usable from both networks:
+#   GitHub Actions (defaults): official Docker Hub, npm and Debian endpoints.
+#   Mainland China build:      --build-arg NODE_IMAGE=docker.m.daocloud.io/library/node:24-bookworm-slim \
+#                              --build-arg NPM_REGISTRY=https://registry.npmmirror.com \
+#                              --build-arg APT_MIRROR=mirrors.aliyun.com
+ARG NODE_IMAGE=node:24-bookworm-slim
+
+FROM ${NODE_IMAGE} AS builder
 
 WORKDIR /usr/src/microsoft-rewards-script
 ENV PLAYWRIGHT_BROWSERS_PATH=0
 
+ARG NPM_REGISTRY=https://registry.npmjs.org
+
 COPY package.json package-lock.json tsconfig.json ./
-RUN npm ci --include=dev --ignore-scripts --registry=https://registry.npmmirror.com
+RUN npm ci --include=dev --ignore-scripts --registry=${NPM_REGISTRY}
 COPY . .
 RUN npm run build
 RUN rm -rf node_modules \
-    && npm ci --omit=dev --ignore-scripts --registry=https://registry.npmmirror.com \
+    && npm ci --omit=dev --ignore-scripts --registry=${NPM_REGISTRY} \
     && npm cache clean --force
 
-FROM docker.m.daocloud.io/library/node:24-bookworm-slim AS runtime
+FROM ${NODE_IMAGE} AS runtime
 
 WORKDIR /usr/src/microsoft-rewards-script
 ENV NODE_ENV=production \
@@ -20,7 +29,10 @@ ENV NODE_ENV=production \
     FORCE_HEADLESS=1 \
     NODE_OPTIONS=--disable-warning=ExperimentalWarning
 
-RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources \
+# The default value rewrites nothing, so only a mirrored build touches apt sources.
+ARG APT_MIRROR=deb.debian.org
+
+RUN sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources \
     && apt-get update && apt-get install -y --no-install-recommends \
     cron tzdata ca-certificates procps util-linux tini \
     && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*

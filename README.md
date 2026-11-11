@@ -112,6 +112,28 @@ format-checked first. A conflict or a failing check keeps `main` untouched and
 opens one `main-promotion` issue, which closes itself once a later run succeeds.
 `main` is only ever merged into, never used as a source.
 
+### Publishing images to Docker Hub
+
+[`.github/workflows/dockerhub-publish.yml`](.github/workflows/dockerhub-publish.yml)
+builds the `v5` tree on every push to `v5` and after every successful Upstream
+sync, then pushes it to Docker Hub as
+`changliuxian49/microsoft-rewards-script`. Two repository secrets are required:
+`DOCKERHUB_USERNAME` (the account name) and `DOCKERHUB_TOKEN` (a Docker Hub
+access token with read and write scope, created under **Account settings →
+Security → New access token**). Without them the run logs a notice and skips the
+publication instead of failing.
+
+Tags follow the registry, not `package.json`: the next release is one past the
+highest published `v5.0.N`, so a fresh repository starts at `v5.0.0`, and
+`latest` is re-pointed at the newest tag with `docker buildx imagetools create`.
+Each commit is also tagged `sha-<7>`, which makes a repeated run for the same
+tree a no-op instead of bumping the counter twice. Images are multi-architecture
+(`linux/amd64`, `linux/arm64`); pass `dry_run: true` to build without pushing.
+
+```sh
+docker pull changliuxian49/microsoft-rewards-script:latest
+```
+
 ## Sessions
 
 To sign in manually on a desktop with a visible browser:
