@@ -59,6 +59,26 @@ jobs:
                           break
                       fi
                   done
+            - name: Report the package and try a whole package delete
+              if: inputs.step == 'private-then-delete'
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  OWNER: ${{ github.repository_owner }}
+              run: |
+                  set -uo pipefail
+                  api="${GITHUB_API_URL:-https://api.github.com}"
+                  for target in \
+                      "${api}/user/packages/container/${PACKAGE}" \
+                      "${api}/users/${OWNER}/packages/container/${PACKAGE}"; do
+                      response="$(curl -sS -w '\n%{http_code}' -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' "$target")"
+                      echo "GET ${target} -> HTTP $(printf '%s' "$response" | tail -n1)"
+                      printf '%s' "$response" | sed '$d' | head -c 500
+                      echo
+                  done
+                  response="$(curl -sS -w '\n%{http_code}' -X DELETE -H "Authorization: Bearer ${GH_TOKEN}" -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' "${api}/user/packages/container/${PACKAGE}")"
+                  echo "DELETE package -> HTTP $(printf '%s' "$response" | tail -n1)"
+                  printf '%s' "$response" | sed '$d' | head -c 500
+                  echo
             - name: Delete every version
               if: inputs.step == 'private-then-delete'
               env:
