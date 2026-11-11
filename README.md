@@ -101,6 +101,17 @@ a failing check or a rejected push stops the sync without pushing and opens one
 it by hand with **Actions → Upstream sync → Run workflow**, where `dry_run: true`
 reports without pushing.
 
+### Promoting to main
+
+[`.github/workflows/promote-to-main.yml`](.github/workflows/promote-to-main.yml)
+runs after every Upstream sync run and on each push to `v5`, then merges `v5`
+into `main` and pushes the result, so `main` always mirrors the synced fork. In
+the steady state the merge changes nothing and is pushed without a rebuild; when
+`main` carries its own commits, the merged tree is built, linted and
+format-checked first. A conflict or a failing check keeps `main` untouched and
+opens one `main-promotion` issue, which closes itself once a later run succeeds.
+`main` is only ever merged into, never used as a source.
+
 ## Sessions
 
 To sign in manually on a desktop with a visible browser:

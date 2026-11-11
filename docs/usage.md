@@ -428,6 +428,28 @@ Run it manually with **Actions → Upstream sync → Run workflow**; the
 defaults for one run, and `dry_run: true` reports without pushing — that is how
 the conflict path can be rehearsed against a scratch branch.
 
+#### Publishing to main
+
+[`.github/workflows/promote-to-main.yml`](../.github/workflows/promote-to-main.yml)
+runs on every completed Upstream sync run and on each push to `v5`, merges `v5`
+into `main` and pushes the result:
+
+| Promotion state | Meaning                                                         |
+| --------------- | --------------------------------------------------------------- |
+| `current`       | `main` already contains `v5`; nothing is pushed.                |
+| `identical`     | The merge changed nothing; the result is pushed without checks. |
+| `diverged`      | `main` has its own commits; the merged tree is verified first.  |
+| `conflict`      | A `main-promotion` issue is opened or refreshed with the paths. |
+| `broken`        | The merged tree fails a check; `main` stays untouched.          |
+| `unrelated`     | No common history with `main`; nothing to merge.                |
+
+`main` is a mirror, never a source: the workflow merges `v5` into it and stops
+there, so the CN patches only ever move in one direction. The full check suite
+runs only for `diverged`, because in the steady state the merged tree is
+byte-identical to the already-verified `v5`. The issue closes itself once a
+later run reaches `current` or `pushed`. Manual runs accept `source_branch`,
+`target_branch` and `dry_run`.
+
 ### Experiments and proxies
 
 Set experiment fields inside `experimental`; all default to `false`.
