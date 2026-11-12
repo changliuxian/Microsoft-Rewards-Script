@@ -427,11 +427,25 @@ merges `TheNetsky/Microsoft-Rewards-Script@v5` into `v5` and reports the result:
 | `unrelated`    | No common history with upstream; nothing to merge.              |
 | `fetch-failed` | The upstream ref could not be fetched; the run is skipped.      |
 
+The CN adaptation is preserved by construction, not by luck. When the merge
+conflicts, each conflicted path takes the upstream version and re-applies only the
+fork's own delta for that path, so the adaptation is re-planted on top of whatever
+upstream changed. If that delta overlaps the upstream rewrite, the fork version of
+the path wins: the run still succeeds, and the skipped upstream delta is quoted in
+a `Upstream sync skipped upstream changes on v5` issue so it can be ported by hand.
+
+A guard step then re-checks the CN markers (`customCN` in the config schema and the
+query engine, `CN_HOT_APIS` and `customCNTrends` in the URL table, the `zh` query
+list, the `CN` defaults, the `Asia/Shanghai` compose timezone and the CN docs).
+A missing marker stops the sync with `state: missing`, so an adaptation that
+upstream silently dropped cannot disappear unnoticed.
+
 After a merge the workflow runs `npm ci`, `npm run build`, `npm run check:api`,
 `npm run lint` and `npm run format:check` on the merged tree. Only a tree that
 passes all of them is pushed, so a broken upstream change never lands on `v5`
-silently. A `conflict` or a failing check leaves the branch untouched; resolve
-it locally, keep the CN behaviour, and the next run picks up where it stopped.
+silently. A `conflict`, a `missing` marker or a failing check leaves the branch
+untouched; resolve it locally, keep the CN behaviour, and the next run picks up
+where it stopped.
 
 The issue closes itself as soon as a later run reaches `current` or `pushed`.
 Run it manually with **Actions → Upstream sync → Run workflow**; the
