@@ -104,13 +104,16 @@ itself once a later run succeeds. Run it by hand with **Actions → Upstream syn
 → Run workflow**, where `dry_run: true` reports without pushing.
 
 Upstream editing the same lines as the CN adaptation is handled without dropping
-either side. Every conflicted path first takes the upstream version and re-applies
-the fork's own delta for that path, so the adaptation lands on top of the rewrite.
-When the delta overlaps the rewrite, the fork version of that path wins and the
-run still succeeds; the skipped upstream delta is quoted in a
-`Upstream sync skipped upstream changes on v5` issue so it can be ported by hand.
-A separate guard re-checks the CN markers in the merged tree, so an adaptation
-that upstream silently dropped also stops the sync instead of disappearing.
+either side. Every conflicted path is resolved in three tiers: re-apply the fork's
+own delta on the upstream version, then the upstream delta on the fork version,
+and only if both fail keep the fork version outright. A hunk that a three-way merge
+cannot place is retried without surrounding context, so an insertion survives an
+upstream edit right beside it. Only the last tier loses information: the run still
+succeeds, and the skipped upstream delta is quoted in a
+`Upstream sync skipped upstream changes on v5` issue so it can be ported by hand;
+that issue stays open until you close it. A separate guard re-checks the CN markers
+in the merged tree, so an adaptation that upstream silently dropped also stops the
+sync instead of disappearing.
 
 ### Promoting to main
 
