@@ -97,11 +97,20 @@ logging tags.
 [`.github/workflows/upstream-sync.yml`](.github/workflows/upstream-sync.yml)
 merges `TheNetsky/Microsoft-Rewards-Script@v5` into `v5` every day and on each
 push to `v5`, so the CN patches ride on top of a current upstream. The merge is
-pushed only after the merged tree builds, lints and formats cleanly. A conflict,
-a failing check or a rejected push stops the sync without pushing and opens one
-`upstream-sync` issue; that issue closes itself once a later run succeeds. Run
-it by hand with **Actions → Upstream sync → Run workflow**, where `dry_run: true`
-reports without pushing.
+pushed only after the CN markers are still present and the merged tree builds,
+lints and formats cleanly. A conflict, a failing check or a rejected push stops
+the sync without pushing and opens one `upstream-sync` issue; that issue closes
+itself once a later run succeeds. Run it by hand with **Actions → Upstream sync
+→ Run workflow**, where `dry_run: true` reports without pushing.
+
+Upstream editing the same lines as the CN adaptation is handled without dropping
+either side. Every conflicted path first takes the upstream version and re-applies
+the fork's own delta for that path, so the adaptation lands on top of the rewrite.
+When the delta overlaps the rewrite, the fork version of that path wins and the
+run still succeeds; the skipped upstream delta is quoted in a
+`Upstream sync skipped upstream changes on v5` issue so it can be ported by hand.
+A separate guard re-checks the CN markers in the merged tree, so an adaptation
+that upstream silently dropped also stops the sync instead of disappearing.
 
 ### Promoting to main
 

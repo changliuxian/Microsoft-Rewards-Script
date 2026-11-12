@@ -2,10 +2,9 @@ import * as fs from 'node:fs'
 import path from 'node:path'
 import { XMLParser, XMLValidator } from 'fast-xml-parser'
 
-import { CN_HOT_SOURCES, URLs } from '../../../constants/urls'
+import { URLs } from '../../../constants/urls'
 import { RSS_FEEDS } from '../../../constants/rssFeeds'
 import type {
-    CNHotBoardItem,
     CNTrends,
     HackerNewsResponse,
     RedditListing,
@@ -16,6 +15,7 @@ import type { BotContext } from '../../../core/BotContext'
 import type { HttpResponse } from '../../../network/HttpClient'
 import { localeRequestHeaders } from '../../../network/RequestHeaders'
 import { resolveAccountLocale } from '../../../util/Locale'
+import { fetchCNHotTopics } from './CNHotSources'
 import { cleanQuery } from './QueryQuality'
 import {
     formatQueryOrigin,
@@ -30,9 +30,6 @@ type QueryContext = Pick<BotContext, 'config' | 'http' | 'isMobile' | 'logger' |
 
 const MAX_RSS_XML_BYTES = 2 * 1024 * 1024
 const FEED_CACHE_MS = 5 * 60 * 1000
-// Falling through 32 boards must not stall the search flow, so the whole cascade gets
-// one shared budget and whatever is left over falls back to the local query list.
-const CN_HOT_BUDGET_MS = 15 * 1000
 const XML_DECLARATION_RE = /<!\s*(?:DOCTYPE|ENTITY)\b/i
 
 interface RssEntry {
@@ -436,109 +433,17 @@ export class QuerySources {
         // The CN hot-topic boards only carry Simplified Chinese hot topics for the CN region.
         // Every candidate is tried in turn and the first one that answers wins, so a single
         // dead aggregator never leaves the search pool without trending topics.
-        const deadline = Date.now() + CN_HOT_BUDGET_MS
-        for (const candidate of shuffledCNHotCandidates()) {
-            if (Date.now() > deadline) {
-                this.bot.logger.debug(
-                    this.bot.isMobile,
-                    'SEARCH-CN-TRENDS',
-                    `Stopped after ${CN_HOT_BUDGET_MS}ms without a usable board`
-                )
-                break
-            }
-            const topics = await this.fetchCNHotBoard(candidate, language, country)
-            if (topics.length > 0) return topics
-        }
-        this.bot.logger.warn(
-            this.bot.isMobile,
-            'SEARCH-CN-TRENDS',
-            'Every CN hot-topic board failed, the search pool keeps its other sources'
-        )
-        return []
-    }
-
-    private async fetchCNHotBoard(candidate: CNHotCandidate, language: string, country: string): Promise<QueryTopic[]> {
-        const origin: QueryOrigin = {
-            source: 'customCN',
-            sourceUrl: candidate.sourceUrl,
+        return fetchCNHotTopics(
+            {
+                fetchBoard: async sourceUrl => {
+                    const origin: QueryOrigin = { source: 'customCN', sourceUrl, language, country }
+                    const response = await this.request<CNTrends>(origin, language, country)
+                    return response.data
+                },
+                log: (level, message) => this.bot.logger[level](this.bot.isMobile, 'SEARCH-CN-TRENDS', message)
+            },
             language,
             country
-        }
-        try {
-            const response = await this.request<CNTrends>(origin, language, country)
-            const data = response.data
-            if (!data || data.code !== 200) {
-                this.bot.logger.debug(
-                    this.bot.isMobile,
-                    'SEARCH-CN-TRENDS',
-                    `Board answered a non-200 code | board=${candidate.label} | code=${String(data?.code)}`
-                )
-                return []
-            }
-            const items: CNHotBoardItem[] = Array.isArray(data.data) ? data.data : []
-            const topics = items
-                .map(item => readCNHotTitle(item))
-                .filter((text): text is string => text.length > 0)
-                .map((text, sourceRank) => ({
-                    text: text.toLowerCase(),
-                    ...origin,
-                    kind: 'trend' as QueryKind,
-                    sourceRank
-                }))
-            if (topics.length === 0) {
-                this.bot.logger.debug(
-                    this.bot.isMobile,
-                    'SEARCH-CN-TRENDS',
-                    `Board returned no usable titles | board=${candidate.label}`
-                )
-                return []
-            }
-            this.bot.logger.debug(
-                this.bot.isMobile,
-                'SEARCH-CN-TRENDS',
-                `Got ${topics.length} topics | board=${candidate.label}`
-            )
-            return topics
-        } catch (error) {
-            this.bot.logger.debug(
-                this.bot.isMobile,
-                'SEARCH-CN-TRENDS',
-                `Request failed | board=${candidate.label} | ${String(error)}`
-            )
-            return []
-        }
+        )
     }
-}
-
-interface CNHotCandidate {
-    label: string
-    sourceUrl: string
-}
-
-function readCNHotTitle(item: CNHotBoardItem): string {
-    if (typeof item?.title === 'string') return item.title.trim()
-    if (typeof item?.word === 'string') return item.word.trim()
-    return ''
-}
-
-function shuffledCNHotCandidates(): CNHotCandidate[] {
-    const candidates: CNHotCandidate[] = []
-    for (const api of CN_HOT_SOURCES) {
-        for (const board of api.boards) {
-            candidates.push({
-                label: `${api.base}${board}`,
-                sourceUrl: URLs.queryEngine.cnHotBoard(api.base, board)
-            })
-        }
-    }
-    // Fisher-Yates, so consecutive runs do not hammer the same aggregator first.
-    for (let index = candidates.length - 1; index > 0; index -= 1) {
-        const swap = Math.floor(Math.random() * (index + 1))
-        const held = candidates[index]!
-        candidates[index] = candidates[swap]!
-        candidates[swap] = held
-    }
-    // The self-hosted board is the backup and therefore always comes last.
-    candidates.push({ label: 'self-hosted', sourceUrl: URLs.queryEngine.customCNTrends() })
-    return candidates
 }
