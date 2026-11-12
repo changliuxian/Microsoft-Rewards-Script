@@ -428,11 +428,20 @@ merges `TheNetsky/Microsoft-Rewards-Script@v5` into `v5` and reports the result:
 | `fetch-failed` | The upstream ref could not be fetched; the run is skipped.      |
 
 The CN adaptation is preserved by construction, not by luck. When the merge
-conflicts, each conflicted path takes the upstream version and re-applies only the
-fork's own delta for that path, so the adaptation is re-planted on top of whatever
-upstream changed. If that delta overlaps the upstream rewrite, the fork version of
-the path wins: the run still succeeds, and the skipped upstream delta is quoted in
-a `Upstream sync skipped upstream changes on v5` issue so it can be ported by hand.
+conflicts, each conflicted path is resolved in three tiers, cheapest first:
+
+1. take the upstream version and re-apply only the fork's own delta for that path,
+   so the adaptation is re-planted on top of whatever upstream changed;
+2. take the fork version and apply only the upstream delta to it, which recovers
+   the paths where each side added a different neighbour to the same region;
+3. keep the fork version of the path outright.
+
+A tier that needs a three-way merge but cannot place its hunk is retried with no
+surrounding context, which is what lets an insertion survive an upstream edit
+directly beside it. Only tier 3 loses information: the run still succeeds, and the
+skipped upstream delta is quoted in a `Upstream sync skipped upstream changes on
+v5` issue so it can be ported by hand. That issue stays open until you close it,
+because a later run cannot tell whether the port happened.
 
 A guard step then re-checks the CN markers (`customCN` in the config schema and the
 query engine, `CN_HOT_APIS` and `customCNTrends` in the URL table, the `zh` query
