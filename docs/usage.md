@@ -354,19 +354,19 @@ Set these fields inside `searchSettings`.
 
 ### Query sources
 
-| Value                                 | Topics                                                    |
-| ------------------------------------- | --------------------------------------------------------- |
-| `google`                              | Google trend topics.                                      |
-| `local`                               | Bundled [local queries](../src/data/search-queries.json). |
-| `wikipedia`                           | Wikipedia topic source.                                   |
-| `wikirandom`                          | Random Wikipedia topics.                                  |
-| `hackernews`                          | Hacker News topics.                                       |
-| `reddit`                              | Reddit topics.                                            |
-| `customCN`                            | CN hot-topic board from a self-hosted service.            |
-| `rss`                                 | Regional Google feeds and configured RSS feeds.           |
-| `rss.googleTrends` / `rss.googleNews` | Regional Google trends/news.                              |
-| `rss.bbc`                             | All configured BBC feeds.                                 |
-| `rss.bbc.technology`                  | One named feed.                                           |
+| Value                                 | Topics                                                         |
+| ------------------------------------- | -------------------------------------------------------------- |
+| `google`                              | Google trend topics.                                           |
+| `local`                               | Bundled [local queries](../src/data/search-queries.json).      |
+| `wikipedia`                           | Wikipedia topic source.                                        |
+| `wikirandom`                          | Random Wikipedia topics.                                       |
+| `hackernews`                          | Hacker News topics.                                            |
+| `reddit`                              | Reddit topics.                                                 |
+| `customCN`                            | CN hot-topic boards, public cascade with a self-hosted backup. |
+| `rss`                                 | Regional Google feeds and configured RSS feeds.                |
+| `rss.googleTrends` / `rss.googleNews` | Regional Google trends/news.                                   |
+| `rss.bbc`                             | All configured BBC feeds.                                      |
+| `rss.bbc.technology`                  | One named feed.                                                |
 
 RSS selectors follow `rss`, `rss.<site>` or `rss.<site>.<feed>`; see the [feed list](../src/constants/rssFeeds.ts).
 
@@ -381,18 +381,29 @@ RSS selectors follow `rss`, `rss.<site>` or `rss.<site>.<feed>`; see the [feed l
 
 #### CN deployments
 
-This fork adds a `customCN` source for accounts in the CN region. It reads a
-self-hosted hot-topic board and turns each headline into a `trend` topic.
+This fork adds a `customCN` source for accounts in the CN region. It walks a list
+of public hot-topic boards and turns each headline into a `trend` topic.
 
-- The endpoint is `CN_TRENDS` in [src/constants/urls.ts](../src/constants/urls.ts);
-  change the host/port to your own service. It must answer
+- The board list is `CN_HOT_APIS` in [src/constants/urls.ts](../src/constants/urls.ts):
+  `v2.xxapi.cn`, `api.gmya.net`, `hot.baiwumm.com`, `cnxiaobai.com/DailyHotApi`
+  and `hotapi.nntool.cc`, covering weibo, douyin, baidu, toutiao, thepaper, qq,
+  netease and zhihu. Every board answers `{"code": 200, "data": [{"title": "..."}]}`;
+  the xxapi douyin board names the field `word` and is read as well.
+- The candidate order is shuffled on every run, and the first board that returns
+  usable titles wins. A board that errors, answers a non-`200` code or returns no
+  titles is skipped, and the cascade moves on to the next one. The whole cascade
+  shares a 15 second budget so a wall of dead endpoints cannot stall the run.
+- The self-hosted board is the backup and always comes last. Its endpoint is
+  `CN_TRENDS` in [src/constants/urls.ts](../src/constants/urls.ts); change the
+  host/port to your own service. It must answer
   `GET /douyin?limit=100&cache=false` with `{"code": 200, "data": [{"title": "..."}]}`.
 - When the resolved country is `CN`, `customCN` is prepended to `queryEngines`
   automatically, even if the config omits it. Other sources keep running in
   parallel, and the usual local-query fallback still applies when every source
   comes back empty.
-- A non-`200` payload or a failed request logs under `SEARCH-CN-TRENDS` and
-  contributes no topics; the run continues on the remaining sources.
+- Every attempt logs under `SEARCH-CN-TRENDS`, naming the board that answered or
+  failed. When all of them fail the source contributes no topics and the run
+  continues on the remaining sources.
 - `src/data/search-queries.json` carries a bundled `zh` query list, so `local`
   also works for a Chinese account.
 

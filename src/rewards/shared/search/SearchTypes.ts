@@ -73,3 +73,10 @@ export interface CNTrends {
     fromCache?: boolean
     data: CNTrendItem[]
 }
+
+// The public aggregators share the CNTrends envelope, but the xxapi douyin board
+// labels the headline `word` and the hot score `hot_value` instead of `title`/`hot`.
+export interface CNHotBoardItem extends Partial<CNTrendItem> {
+    word?: string
+    hot_value?: number
+}
