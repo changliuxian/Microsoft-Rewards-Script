@@ -16,7 +16,28 @@ const HACKER_NEWS = 'https://hn.algolia.com'
 const BING_SUGGESTIONS_APPID = '6D0A9B8C5100E9ECC7E11A104ADD76C10219804B'
 
 // Self-hosted CN hot-topic service (douyin board). Replace with your own host/port.
+// This is the last-resort source, only used when every public board below fails.
 const CN_TRENDS = 'http://192.168.31.214:6688'
+
+// Public CN hot-topic aggregators. Every board answers {code: 200, data: [{title}]},
+// except the xxapi douyin board which calls the field `word`. The order here is the
+// declaration order; QuerySources shuffles it per run and falls through on failure.
+const CN_HOT_APIS: ReadonlyArray<{ base: string; boards: ReadonlyArray<string> }> = [
+    { base: 'https://v2.xxapi.cn/api/', boards: ['weibohot', 'douyinhot', 'baiduhot'] },
+    { base: 'https://api.gmya.net/api/', boards: ['weibohot', 'douyinhot', 'baiduhot', 'toutiaohot'] },
+    {
+        base: 'https://hot.baiwumm.com/api/',
+        boards: ['weibo', 'douyin', 'baidu', 'toutiao', 'thepaper', 'qq', 'netease', 'zhihu']
+    },
+    {
+        base: 'https://cnxiaobai.com/DailyHotApi/',
+        boards: ['weibo', 'douyin', 'baidu', 'toutiao', 'thepaper', 'qq-news', 'netease-news', 'zhihu']
+    },
+    {
+        base: 'https://hotapi.nntool.cc/',
+        boards: ['weibo', 'douyin', 'baidu', 'toutiao', 'thepaper', 'qq-news', 'netease-news', 'zhihu']
+    }
+]
 
 export const URLs = {
     github: {
@@ -71,8 +92,11 @@ export const URLs = {
             `https://${langCode}.wikipedia.org/w/api.php?action=query&format=json&list=random&rnnamespace=0&rnlimit=20`,
         hackerNews: `${HACKER_NEWS}/api/v1/search?tags=front_page&hitsPerPage=50`,
         reddit: (subreddit: string) => `${REDDIT}/r/${subreddit}.json?limit=50`,
-        customCNTrends: (limit = 100) => `${CN_TRENDS}/douyin?limit=${encodeURIComponent(String(limit))}&cache=false`
+        customCNTrends: (limit = 100) => `${CN_TRENDS}/douyin?limit=${encodeURIComponent(String(limit))}&cache=false`,
+        cnHotBoard: (base: string, board: string) => `${base}${board}`
     }
 } as const
+
+export const CN_HOT_SOURCES = CN_HOT_APIS
 
 export const REWARDS_BASE_URL = URLs.rewards.origin
