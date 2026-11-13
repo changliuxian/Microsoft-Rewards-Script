@@ -6,6 +6,13 @@ import type { QueryKind, QueryOrigin, QueryTopic } from './QueryContext'
 // shares one budget and whatever is left over falls back to the local query list.
 export const CN_HOT_BUDGET_MS = 15 * 1000
 
+// One board is one list, so stopping at the first board that answers would hand the
+// search queue the same headlines every run and only a handful of distinct topics.
+// Several boards are merged instead, each contributing only its leading titles, so the
+// pool holds a spread of headlines that can take turns as the main topic.
+export const CN_HOT_BOARD_LIMIT = 4
+export const CN_HOT_PER_BOARD = 12
+
 export type CNHotLogLevel = 'debug' | 'warn'
 
 export interface CNHotDeps {
@@ -18,6 +25,11 @@ export interface CNHotDeps {
 interface CNHotCandidate {
     label: string
     sourceUrl: string
+}
+
+const SELF_HOSTED_CANDIDATE: CNHotCandidate = {
+    label: 'self-hosted',
+    sourceUrl: URLs.queryEngine.customCNTrends()
 }
 
 function readCNHotTitle(item: CNHotBoardItem): string {
@@ -44,31 +56,62 @@ function shuffledCNHotCandidates(): CNHotCandidate[] {
         candidates[index] = candidates[swap]!
         candidates[swap] = held
     }
-    // The self-hosted board is the backup and therefore always comes last.
-    candidates.push({ label: 'self-hosted', sourceUrl: URLs.queryEngine.customCNTrends() })
     return candidates
 }
 
 /**
- * Walks the CN hot-topic boards and returns the first non-empty board as topics.
+ * Collects trending titles from several CN hot-topic boards.
  *
- * The candidate order is shuffled per call, every failure falls through to the next
- * board, and the self-hosted board is always the last resort, so one dead aggregator
- * never leaves the search pool without trending topics.
+ * The candidate order is shuffled per call and every failure falls through to the next
+ * board, so one dead aggregator never leaves the search pool without trending topics.
+ * Boards are merged until `CN_HOT_BOARD_LIMIT` of them answered, because a single board
+ * only carries one list of headlines. The self-hosted board is the backup and is only
+ * asked when every public board failed.
  */
 export async function fetchCNHotTopics(deps: CNHotDeps, language = 'zh', country = 'CN'): Promise<QueryTopic[]> {
     const now = deps.now ?? Date.now
     const deadline = now() + CN_HOT_BUDGET_MS
-    for (const candidate of shuffledCNHotCandidates()) {
+    const topics = await collectCNHotTopics(deps, shuffledCNHotCandidates(), deadline, now, language, country)
+    if (topics.length > 0) return topics
+
+    deps.log('warn', 'Every public CN hot-topic board failed, trying the self-hosted board')
+    const fallback = await collectCNHotTopics(deps, [SELF_HOSTED_CANDIDATE], deadline, now, language, country)
+    if (fallback.length > 0) return fallback
+
+    deps.log('warn', 'Every CN hot-topic board failed, the search pool keeps its other sources')
+    return []
+}
+
+async function collectCNHotTopics(
+    deps: CNHotDeps,
+    candidates: CNHotCandidate[],
+    deadline: number,
+    now: () => number,
+    language: string,
+    country: string
+): Promise<QueryTopic[]> {
+    const collected: QueryTopic[] = []
+    const seen = new Set<string>()
+    let answered = 0
+    for (const candidate of candidates) {
+        if (answered >= CN_HOT_BOARD_LIMIT) break
         if (now() > deadline) {
-            deps.log('debug', `Stopped after ${CN_HOT_BUDGET_MS}ms without a usable board`)
+            deps.log('debug', `Stopped after ${CN_HOT_BUDGET_MS}ms with ${answered} board(s) merged`)
             break
         }
         const topics = await fetchCNHotBoard(deps, candidate, language, country)
-        if (topics.length > 0) return topics
+        if (topics.length === 0) continue
+        answered += 1
+        for (const topic of topics.slice(0, CN_HOT_PER_BOARD)) {
+            if (seen.has(topic.text)) continue
+            seen.add(topic.text)
+            collected.push({ ...topic, sourceRank: collected.length })
+        }
     }
-    deps.log('warn', 'Every CN hot-topic board failed, the search pool keeps its other sources')
-    return []
+    if (collected.length > 0) {
+        deps.log('debug', `CN hot-topic pool ready | boards=${answered} | topics=${collected.length}`)
+    }
+    return collected
 }
 
 async function fetchCNHotBoard(
