@@ -1,7 +1,7 @@
 import type { Page } from 'patchright'
 import { browserTimeout } from '../../../browser/BrowserTiming'
 import { isBrowserPageCrashed, isBrowserPageCrashError } from '../../../browser/BrowserPageHealth'
-import { URLs } from '../../../constants/urls'
+import { bingOriginOfPage, isBingHost } from '../../../constants/urls'
 import { BaseActivity } from '../../shared/activities/BaseActivity'
 import { bingSearchBox, humanPreFocusPauseMs, humanType, submitSearch } from './HumanTyping'
 
@@ -70,7 +70,7 @@ export class BingSearchPage extends BaseActivity {
     private async prepare(page: Page): Promise<void> {
         await page.bringToFront()
         const current = new URL(page.url())
-        if (current.origin !== URLs.bing.origin || !['/', '/search'].includes(current.pathname)) {
+        if (!isBingHost(current.hostname) || !['/', '/search'].includes(current.pathname)) {
             await this.open(page)
         }
         await this.bot.browser.utils.dismissMessages(page)
@@ -79,7 +79,7 @@ export class BingSearchPage extends BaseActivity {
 
     private async recover(page: Page): Promise<void> {
         this.bot.signal.throwIfAborted()
-        if (new URL(page.url()).origin !== URLs.bing.origin) {
+        if (!isBingHost(new URL(page.url()).hostname)) {
             await this.open(page)
             return
         }
@@ -94,7 +94,9 @@ export class BingSearchPage extends BaseActivity {
     }
 
     async open(page: Page): Promise<void> {
-        await page.goto(URLs.bing.origin, {
+        // Reuse whichever Bing host this tab already reached, so a redirect does not
+        // bounce the page back and forth between www.bing.com and cn.bing.com.
+        await page.goto(bingOriginOfPage(page), {
             waitUntil: 'domcontentloaded',
             timeout: browserTimeout(this.bot, 'navigation')
         })

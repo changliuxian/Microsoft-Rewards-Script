@@ -88,6 +88,11 @@ This fork carries the CN adaptation on top of upstream v5:
   `ACCOUNT_n_LANG_CODE=zh-CN` and `queryEngines` including `customCN`.
 - [Dockerfile](Dockerfile) and [compose.yaml](compose.yaml) use daocloud/npmmirror
   and aliyun mirrors, `TZ: Asia/Shanghai` and the headless-shell Chromium only.
+- Bing is accepted on every host of the `*.bing.com` family (`isBingHost` in
+  [src/constants/urls.ts](src/constants/urls.ts)). Requests from mainland China
+  are answered by `cn.bing.com` and everything else by `www.bing.com`, so the
+  search submission, the report calls and the flyout are all aimed at the host the
+  browser actually landed on instead of asserting `www.bing.com`.
 
 See [CN deployments](docs/usage.md#cn-deployments) for the endpoint contract and
 logging tags.

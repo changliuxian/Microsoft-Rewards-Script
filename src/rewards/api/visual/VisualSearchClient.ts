@@ -1,4 +1,4 @@
-import { URLs } from '../../../constants/urls'
+import { bingOriginOfPage, URLs } from '../../../constants/urls'
 import type { BotContext } from '../../../core/BotContext'
 import { isTerminalHttpError } from '../../../network/HttpError'
 import type { BingSearchReport } from '../../shared/search/BingSearchReport'
@@ -26,7 +26,11 @@ export class VisualSearchClient {
     async acquire(imageUrl?: string): Promise<VisualSearchCandidate | null> {
         try {
             const seed = imageUrl ?? (await this.getSeedUrls())[0] ?? STATIC_SEED_URL
-            const url = new URL('/images/kblob', URLs.bing.origin)
+            // POST does not survive a redirect: Bing answers a mainland request with a 302
+            // to cn.bing.com, the client downgrades it to GET, and kblob then returns 411.
+            // Aim at the host the session is already on instead of the default one.
+            const origin = bingOriginOfPage(this.bot.activePage ?? { url: () => URLs.bing.origin })
+            const url = new URL('/images/kblob', origin)
             url.search = new URLSearchParams({
                 iss: 'sbi',
                 form: 'SBIHMP',
@@ -45,8 +49,8 @@ export class VisualSearchClient {
                 headers: {
                     Accept: 'application/json',
                     'Content-Type': encoded.headers.get('content-type')!,
-                    Origin: URLs.bing.origin,
-                    Referer: URLs.bing.images
+                    Origin: origin,
+                    Referer: `${origin}/images`
                 },
                 data: new Uint8Array(await encoded.arrayBuffer()),
                 retries: 0

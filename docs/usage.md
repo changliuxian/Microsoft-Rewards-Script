@@ -406,6 +406,12 @@ of public hot-topic boards and turns each headline into a `trend` topic.
   continues on the remaining sources.
 - `src/data/search-queries.json` carries a bundled `zh` query list, so `local`
   also works for a Chinese account.
+- Bing is reached on whichever host of the `*.bing.com` family answers. A mainland
+  IP is redirected from `www.bing.com` to `cn.bing.com` on every path, so the code
+  uses `isBingHost` ([src/constants/urls.ts](../src/constants/urls.ts)) instead of
+  comparing against `https://www.bing.com`, and builds report and flyout URLs from
+  the host the browser actually landed on. A failed search submission names the URL
+  it landed on, which makes a regional redirect obvious in the log.
 
 ```json
 "searchSettings": {

@@ -6,7 +6,7 @@ import { isBrowserPageCrashed } from '../../../browser/BrowserPageHealth'
 import { HttpError } from '../../../network/HttpError'
 import type { Locator, Page, Request } from 'patchright'
 
-import { URLs } from '../../../constants/urls'
+import { isBingHost, URLs } from '../../../constants/urls'
 import type { BotContext } from '../../../core/BotContext'
 import { ActivitySkipError } from '../../shared/ActivityResult'
 import { EARN_TASK_CONTROLS, EARN_TASK_SECTIONS } from '../parsers/EarnPageParser'
@@ -98,7 +98,9 @@ export class BrowserRewardNavigator {
 
     async openFlyout(page: Page, refresh = false): Promise<void> {
         await page.bringToFront()
-        if (refresh || page.url() !== URLs.bing.rewardsFlyoutPage) {
+        // The flyout redirects to the regional Bing host, so compare path and query instead
+        // of the whole URL, which would reload the page on every call.
+        if (refresh || !this.isOnFlyout(page)) {
             await this.loadPage(page, URLs.bing.rewardsFlyoutPage, 'FLYOUT-PAGE', 'Rendered Bing Rewards flyout')
         }
         await this.bot.browser.utils.dismissMessages(page)
@@ -553,7 +555,7 @@ export class BrowserRewardNavigator {
             if (report || request.method() !== 'POST') return
             try {
                 const url = new URL(request.url())
-                if (url.origin !== URLs.bing.origin || !url.pathname.toLowerCase().endsWith('/reportactivity')) return
+                if (!isBingHost(url.hostname) || !url.pathname.toLowerCase().endsWith('/reportactivity')) return
                 const reportedId = request.postDataJSON()?.OfferId
                 if (
                     typeof reportedId !== 'string' ||
@@ -659,5 +661,12 @@ export class BrowserRewardNavigator {
         } catch {
             return null
         }
+    }
+
+    private isOnFlyout(page: Page): boolean {
+        const current = this.parseUrl(page.url())
+        const flyout = this.parseUrl(URLs.bing.rewardsFlyoutPage)
+        if (!current || !flyout) return false
+        return isBingHost(current.hostname) && current.pathname === flyout.pathname && current.search === flyout.search
     }
 }

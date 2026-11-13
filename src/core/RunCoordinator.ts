@@ -1,5 +1,6 @@
 import { logAccountResult, logRunResult } from '../logging/RunSummary'
 import type { WorkflowFactory } from './AccountWorkflow'
+import { isBingHost } from '../constants/urls'
 import { setTimeout as delay } from 'node:timers/promises'
 import cluster, { type Worker } from 'node:cluster'
 import pkg from '../../package.json'
@@ -253,9 +254,8 @@ export class RunCoordinator {
                         onError: (error, request) => {
                             const host = new URL(request.url!).hostname
                             if (
+                                !isBingHost(host) &&
                                 ![
-                                    'rewards.bing.com',
-                                    'www.bing.com',
                                     'prod.rewardsplatform.microsoft.com',
                                     'login.live.com',
                                     'login.microsoftonline.com'
