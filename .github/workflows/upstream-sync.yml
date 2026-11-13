@@ -128,10 +128,6 @@ jobs:
 
                   git log --reverse --oneline "HEAD..upstream/${UPSTREAM_BRANCH}" > absorbed.txt || true
                   git log --reverse --oneline "upstream/${UPSTREAM_BRANCH}..HEAD" > local.txt || true
-                  : > auto-resolved.txt
-                  : > overridden.txt
-                  : > unresolved.txt
-                  : > replant.log
 
                   if [ "$behind" = "0" ]; then
                       echo "state=current" >> "$GITHUB_OUTPUT"
@@ -139,169 +135,52 @@ jobs:
                       exit 0
                   fi
 
-                  merge_message="chore: merge ${UPSTREAM_REPO}@${UPSTREAM_BRANCH} into the CN fork"
+                  # The merge itself lives in scripts/ci/merge-upstream.sh so that the
+                  # re-plant tiers and the restore pass can be exercised locally by
+                  # scripts/ci/test-cn-sync.sh instead of only in this runner. The script
+                  # logs what it did and writes its key=value result to merge-result.txt.
+                  bash scripts/ci/merge-upstream.sh \
+                      --upstream-ref "upstream/${UPSTREAM_BRANCH}" \
+                      --base "${base}" \
+                      --message "chore: merge ${UPSTREAM_REPO}@${UPSTREAM_BRANCH} into the CN fork" \
+                      --log-dir . \
+                      --output "$GITHUB_OUTPUT"
+                  state=$(sed -n 's/^state=//p' merge-result.txt | tail -n 1)
+                  echo "Merge result: ${state:-unknown}"
 
-                  if git merge --no-ff --no-edit "upstream/${UPSTREAM_BRANCH}" -m "${merge_message}" \
-                      > merge.log 2>&1; then
-                      echo "state=merged" >> "$GITHUB_OUTPUT"
-                      echo "resolved=0" >> "$GITHUB_OUTPUT"
-                      echo "overridden=0" >> "$GITHUB_OUTPUT"
-                      echo "Merged ${behind} upstream commit(s); the CN patches stay on top."
-                      exit 0
+                  # Capture the skipped upstream delta while the upstream ref is still
+                  # here, so the report step only has to read a file.
+                  if [ -s overridden.txt ]; then
+                      : > overridden-diff.txt
+                      while IFS= read -r path; do
+                          [ -n "${path}" ] || continue
+                          printf '### %s\n' "${path}" >> overridden-diff.txt
+                          git diff "${base}..upstream/${UPSTREAM_BRANCH}" -- "${path}" >> overridden-diff.txt 2>/dev/null || true
+                      done < overridden.txt
                   fi
 
-                  # The merge conflicted, which means upstream and the CN adaptation touched
-                  # the same lines. Resolve each path in three tiers, cheapest first:
-                  #   1. take the upstream version and re-apply only the fork's own delta for
-                  #      that path, so the adaptation lands on top of the upstream rewrite;
-                  #   2. take the fork version and apply only the upstream delta to it, which
-                  #      recovers the paths where each side added a different neighbour to the
-                  #      same region;
-                  #   3. keep the fork version of the path and record it, so the adaptation is
-                  #      never lost silently.
-                  # The CN guard and the build check run afterwards, so a wrong pick cannot
-                  # reach the branch unnoticed.
-                  echo "Merge conflicted; re-planting the fork delta on the upstream version."
-                  mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
-                  echo "Conflicted paths: ${#conflicts[@]}"
-
-                  # Apply the delta between two revisions for one path.
-                  # --3way reports success even when it leaves conflict markers behind, so the
-                  # file itself has to be inspected. When the three-way merge cannot place the
-                  # hunk, retry with -C0, which needs no surrounding context and therefore
-                  # survives a neighbouring insertion; the CN guard and the build check run
-                  # afterwards, so a hunk placed at the wrong offset cannot reach the branch.
-                  apply_delta() {
-                      local output
-                      if output=$(git diff --binary "$1" "$2" -- "$3" | git apply --3way --whitespace=nowarn - 2>&1) \
-                          && ! grep -q '^<<<<<<< ' "$3" 2>/dev/null; then
-                          return 0
-                      fi
-                      printf '%s\n' "${output}" >> replant.log
-                      [ -n "${4:-}" ] || return 1
-                      git checkout "$4" -- "$3" 2>> replant.log || return 1
-                      output=$(git diff --binary "$1" "$2" -- "$3" | git apply -C0 --whitespace=nowarn - 2>&1) || {
-                          printf '%s\n' "${output}" >> replant.log
-                          return 1
-                      }
-                      printf '%s\n' "${output}" >> replant.log
-                      ! grep -q '^<<<<<<< ' "$3" 2>/dev/null
-                  }
-
-                  for path in "${conflicts[@]}"; do
-                      replayed=0
-                      # Tier 1: the fork delta on the upstream version.
-                      if git cat-file -e "upstream/${UPSTREAM_BRANCH}:${path}" 2>/dev/null \
-                          && git checkout "upstream/${UPSTREAM_BRANCH}" -- "${path}" 2>> replant.log; then
-                          if apply_delta "${base}" HEAD "${path}" "upstream/${UPSTREAM_BRANCH}"; then
-                              replayed=1
-                              echo "Re-planted the fork delta on ${path}."
-                          fi
-                      fi
-                      # Tier 2: the upstream delta on the fork version.
-                      if [ "${replayed}" = "0" ] && git cat-file -e "HEAD:${path}" 2>/dev/null \
-                          && git checkout HEAD -- "${path}" 2>> replant.log; then
-                          if apply_delta "${base}" "upstream/${UPSTREAM_BRANCH}" "${path}" HEAD; then
-                              replayed=1
-                              echo "Re-planted the upstream delta on the fork version of ${path}."
-                          fi
-                      fi
-                      if [ "${replayed}" = "1" ]; then
-                          git add -- "${path}"
-                          echo "${path}" >> auto-resolved.txt
-                          continue
-                      fi
-                      # Tier 3: the fork version wins outright.
-                      if git checkout HEAD -- "${path}" 2>> replant.log; then
-                          git add -- "${path}"
-                          echo "${path}" >> overridden.txt
-                          echo "::warning::Kept the fork version of ${path}; the upstream change to it was skipped."
-                          continue
-                      fi
-                      echo "${path} (could not be resolved)" >> unresolved.txt
-                  done
-
-                  if [ -s unresolved.txt ]; then
-                      echo "state=conflict" >> "$GITHUB_OUTPUT"
-                      cp unresolved.txt conflicted.txt
-                      echo "Paths that could not be resolved:"
-                      cat unresolved.txt
-                      git merge --abort || true
-                      exit 0
+                  if [ "${state}" = "conflict" ]; then
+                      echo "The merge could not keep the CN adaptation; nothing is pushed."
                   fi
-
-                  if ! git commit --no-edit >> merge.log 2>&1; then
-                      echo "state=conflict" >> "$GITHUB_OUTPUT"
-                      echo "The resolved merge could not be committed." >> conflicted.txt
-                      git merge --abort || true
-                      exit 0
-                  fi
-
-                  resolved=$(wc -l < auto-resolved.txt | tr -d ' ')
-                  overridden=$(wc -l < overridden.txt | tr -d ' ')
-                  # Capture the skipped upstream delta while the upstream ref is still here,
-                  # so the report step only has to read a file.
-                  : > overridden-diff.txt
-                  while IFS= read -r path; do
-                      [ -n "${path}" ] || continue
-                      printf '### %s\n' "${path}" >> overridden-diff.txt
-                      git diff "${base}..upstream/${UPSTREAM_BRANCH}" -- "${path}" >> overridden-diff.txt 2>/dev/null || true
-                  done < overridden.txt
-                  echo "state=merged" >> "$GITHUB_OUTPUT"
-                  echo "resolved=${resolved}" >> "$GITHUB_OUTPUT"
-                  echo "overridden=${overridden}" >> "$GITHUB_OUTPUT"
-                  echo "Merged ${behind} upstream commit(s); re-planted ${resolved} path(s), kept the fork version of ${overridden}."
 
             # The CN adaptation is a product requirement, not a nicety: if upstream (or a
             # re-plant) leaves any marker missing, the merged tree must not be pushed.
+            # The marker list lives in the repository so that the same check runs locally.
             - name: Assert the CN adaptation survived
               id: guard
               if: steps.sync.outputs.state == 'merged'
               shell: bash
               run: |
                   set -uo pipefail
-                  cat > markers.txt <<'MARKERS'
-                  src/config/Config.ts|customCN
-                  src/config/Validator.ts|customCN
-                  src/config/Defaults.ts|customCN
-                  src/constants/urls.ts|CN_HOT_APIS
-                  src/constants/urls.ts|customCNTrends
-                  src/constants/urls.ts|isBingHost
-                  src/constants/urls.ts|bingOriginOf
-                  src/rewards/shared/query/QueryEngine.ts|customCN
-                  src/rewards/shared/query/QueryEngine.ts|cn-headline
-                  src/rewards/shared/query/QueryEngine.ts|cnOnly
-                  src/rewards/shared/query/QuerySources.ts|getCustomCNTrends
-                  src/rewards/shared/query/CNHotSources.ts|fetchCNHotTopics
-                  src/rewards/shared/query/CNHotSources.ts|CN_HOT_BOARD_LIMIT
-                  src/rewards/shared/search/SearchTypes.ts|CNTrends
-                  src/rewards/browser/search/HumanTyping.ts|isBingHost
-                  src/rewards/shared/http/BingClient.ts|isBingHost
-                  src/data/search-queries.json|"zh"
-                  config.example.json|customCN
-                  env.example|GEO_LOCALE=CN
-                  compose.yaml|Asia/Shanghai
-                  Dockerfile|NODE_IMAGE
-                  README.md|customCN
-                  docs/usage.md|customCN
-                  MARKERS
-
-                  : > missing.txt
-                  while IFS='|' read -r path needle; do
-                      [ -n "${path}" ] || continue
-                      if ! grep -Fq -- "${needle}" "${path}" 2>/dev/null; then
-                          echo "${path} is missing ${needle}" >> missing.txt
-                      fi
-                  done < markers.txt
-
-                  if [ -s missing.txt ]; then
-                      echo "state=missing" >> "$GITHUB_OUTPUT"
-                      echo "The merged tree lost part of the CN adaptation; nothing is pushed."
-                      cat missing.txt
+                  if bash scripts/ci/check-cn-adaptation.sh > guard.log 2>&1; then
+                      echo "state=ok" >> "$GITHUB_OUTPUT"
+                      cat guard.log
                       exit 0
                   fi
-                  echo "state=ok" >> "$GITHUB_OUTPUT"
-                  echo "All CN markers are still in the merged tree."
+                  echo "state=missing" >> "$GITHUB_OUTPUT"
+                  echo "The merged tree lost part of the CN adaptation; nothing is pushed."
+                  cp guard.log missing.txt
+                  cat guard.log
 
             - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
               if: steps.sync.outputs.state == 'merged' && steps.guard.outputs.state == 'ok'
@@ -363,6 +242,7 @@ jobs:
                   UPSTREAM_SHA: ${{ steps.sync.outputs.upstream_sha }}
                   RESOLVED: ${{ steps.sync.outputs.resolved }}
                   OVERRIDDEN: ${{ steps.sync.outputs.overridden }}
+                  RESTORED: ${{ steps.sync.outputs.restored }}
               run: |
                   set -euo pipefail
                   api="${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}"
@@ -379,8 +259,9 @@ jobs:
 
                   # Two different issues can exist: a failure issue that closes itself once a
                   # run succeeds, and a review issue for a sync that succeeded by keeping the
-                  # fork version of some paths. The review issue stays open until a human has
-                  # ported the skipped upstream change, because the next run cannot know that.
+                  # fork version of some paths or by restoring paths upstream had dropped.
+                  # The review issue stays open until a human has ported the skipped upstream
+                  # change, because the next run cannot know that.
                   review_title="Upstream sync skipped upstream changes on ${FORK_BRANCH}"
 
                   # The label must exist before an issue can carry it; a 422 means it already does.
@@ -406,14 +287,17 @@ jobs:
                       echo "Closed issue #${1}."
                   }
 
+                  # A kept path and a restored path both mean an upstream change was skipped,
+                  # so both belong in the review issue rather than in the failure issue.
+                  skipped=$(( ${OVERRIDDEN:-0} + ${RESTORED:-0} ))
                   case "${state}" in
                       current | pushed | verified)
-                          if [ "${OVERRIDDEN:-0}" = "0" ]; then
+                          if [ "${skipped}" = "0" ]; then
                               echo "Nothing to report (state=${state})."
                               close_issue "${failure_issue}"
                               exit 0
                           fi
-                          echo "The sync succeeded, but ${OVERRIDDEN} path(s) kept the fork version."
+                          echo "The sync succeeded, but ${skipped} path(s) need a look (kept ${OVERRIDDEN:-0}, restored ${RESTORED:-0})."
                           close_issue "${failure_issue}"
                           existing="${review_issue}"
                           title="${review_title}"
@@ -441,6 +325,7 @@ jobs:
                       echo "| Local commits carried | ${AHEAD:-?} |"
                       echo "| Paths re-planted | ${RESOLVED:-0} |"
                       echo "| Paths kept from the fork | ${OVERRIDDEN:-0} |"
+                      echo "| Paths restored from the fork | ${RESTORED:-0} |"
                       echo "| Dry run | \`${DRY_RUN}\` |"
                       echo "| Run | [${GITHUB_RUN_ID}](${run_url}) |"
                       echo
@@ -524,6 +409,17 @@ jobs:
                           echo '```'
                           echo
                       fi
+                      if [ -s restored.txt ]; then
+                          echo "**Paths the upstream side had dropped**"
+                          echo
+                          echo "Upstream deleted or renamed these paths without a conflict. The fork"
+                          echo "version was put back, so the CN behaviour is still in the tree:"
+                          echo
+                          echo '```'
+                          head -n 40 restored.txt
+                          echo '```'
+                          echo
+                      fi
                       echo "**Upstream commits to absorb**"
                       echo
                       echo '```'
@@ -582,6 +478,7 @@ jobs:
                       echo "| Push | \`${PUSH_STATE:-skipped}\` |"
                       echo "| Paths re-planted | ${RESOLVED:-0} |"
                       echo "| Paths kept from the fork | ${OVERRIDDEN:-0} |"
+                      echo "| Paths restored from the fork | ${RESTORED:-0} |"
                       echo "| Fork branch | \`${FORK_BRANCH:-?}\` |"
                       echo "| Upstream | \`${UPSTREAM_REPO:-?}@${UPSTREAM_BRANCH:-?}\` |"
                       echo "| Upstream head | \`${UPSTREAM_SHA:-n/a}\` |"
