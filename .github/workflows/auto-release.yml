@@ -115,71 +115,29 @@ jobs:
                   registry: ${{ env.REGISTRY }}
                   username: ${{ github.actor }}
                   password: ${{ github.token }}
-            - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
-              with:
-                  platforms: arm64
             - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-            - name: Preserve an existing versioned image
-              id: existing
+            - name: Check which image carries this release
+              id: image
               env:
                   IMAGE: ${{ needs.prepare.outputs.image }}
                   VERSION: ${{ needs.prepare.outputs.version }}
               run: |
-                  node --input-type=module <<'NODE'
-                  import fs from 'node:fs'
-                  import { spawnSync } from 'node:child_process'
-
-                  const image = process.env.IMAGE
-                  const version = process.env.VERSION
-                  function inspect(ref, format) {
-                      return spawnSync('docker', ['buildx', 'imagetools', 'inspect', ref, '--format', format], {
-                          encoding: 'utf8', timeout: 60000
-                      })
-                  }
-                  const result = inspect(`${image}:${version}`, '{{json .Manifest}}')
-                  let exists = false
-                  let digest = ''
-                  if (result.error) throw result.error
-                  if (result.status === 0) {
-                      const manifest = JSON.parse(result.stdout)
-                      digest = manifest.digest
-                      if (!/^sha256:[a-f0-9]{64}$/.test(digest ?? '')) throw new Error('Image digest is missing or invalid.')
-                      for (const architecture of ['amd64', 'arm64']) {
-                          const platform = manifest.manifests?.find(item => item.platform?.os === 'linux' && item.platform.architecture === architecture)
-                          if (!platform) throw new Error(`Existing image is missing linux/${architecture}; refusing to overwrite it.`)
-                          const config = inspect(`${image}@${platform.digest}`, '{{json .Image}}')
-                          if (config.error) throw config.error
-                          if (config.status !== 0) throw new Error(config.stderr || 'Cannot read existing image labels.')
-                          const labels = JSON.parse(config.stdout).config?.Labels ?? {}
-                          if (labels['org.opencontainers.image.revision'] !== process.env.GITHUB_SHA ||
-                              labels['org.opencontainers.image.version'] !== version ||
-                              labels['org.opencontainers.image.source'] !== `https://github.com/${process.env.GITHUB_REPOSITORY}`) {
-                              throw new Error(`Image ${version} already belongs to different or unverified code. Bump the version.`)
-                          }
-                      }
-                      exists = true
-                      console.log(`Reusing ${image}:${version} from this commit without overwriting it.`)
-                  } else if (!/not found|manifest unknown|no such manifest/i.test(result.stderr)) {
-                      throw new Error(result.stderr || 'Registry lookup failed; refusing to publish.')
-                  }
-                  fs.appendFileSync(process.env.GITHUB_OUTPUT, `exists=${exists}\ndigest=${digest}\n`)
-                  NODE
-            - name: Build and publish AMD64/ARM64 images
-              id: build
-              if: steps.existing.outputs.exists != 'true'
-              uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-              with:
-                  context: .
-                  push: true
-                  platforms: linux/amd64,linux/arm64
-                  tags: ${{ needs.prepare.outputs.image }}:${{ needs.prepare.outputs.version }}
-                  cache-from: type=gha,version=2,scope=release-v${{ needs.prepare.outputs.major }}
-                  cache-to: type=gha,version=2,scope=release-v${{ needs.prepare.outputs.major }},mode=max
-                  labels: |
-                      org.opencontainers.image.source=https://github.com/${{ github.repository }}
-                      org.opencontainers.image.version=${{ needs.prepare.outputs.version }}
-                      org.opencontainers.image.revision=${{ github.sha }}
-            - name: Create GitHub release after the images are published
+                  # Every image is built by the publication workflow, which numbers the
+                  # images it publishes from v5.0.0 upwards. A release therefore only
+                  # reports whether a matching image exists; it never builds or moves one,
+                  # because two builders writing the same package is what produced
+                  # duplicate manifests for a single version.
+                  set -uo pipefail
+                  versioned="${IMAGE}:v${VERSION}"
+                  if digest=$(docker buildx imagetools inspect "${versioned}" --format '{{json .Manifest}}' 2>/dev/null |
+                      jq -r '.digest' 2>/dev/null) && [ -n "${digest}" ]; then
+                      echo "${versioned} = ${digest}"
+                      echo "state=published" >> "$GITHUB_OUTPUT"
+                  else
+                      echo "::notice::No image is published as ${versioned} yet; the publication workflow owns it."
+                      echo "state=pending" >> "$GITHUB_OUTPUT"
+                  fi
+            - name: Create the GitHub release
               env:
                   GH_TOKEN: ${{ github.token }}
                   RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
@@ -190,14 +148,3 @@ jobs:
                     args+=(--prerelease)
                   fi
                   gh release create "${args[@]}"
-            - name: Note the floating channels
-              if: needs.prepare.outputs.prerelease != 'true'
-              env:
-                  IMAGE: ${{ needs.prepare.outputs.image }}
-                  MAJOR: ${{ needs.prepare.outputs.major }}
-              run: |
-                  # The floating channels (`latest`, `<major>`) belong to the publication
-                  # workflow, which moves them on every push to v5. Creating them here too
-                  # would move them back to an older build whenever a release is published
-                  # late, so this job only owns the release's own versioned tag.
-                  echo "Floating channels for ${IMAGE} are owned by the publication workflow."
