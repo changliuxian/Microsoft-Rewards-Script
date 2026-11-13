@@ -79,11 +79,13 @@ This fork carries the CN adaptation on top of upstream v5:
 - `customCN` query source — a cascade of public CN hot-topic boards (xxapi, gmya,
   baiwumm, cnxiaobai, nntool; see `CN_HOT_APIS` in
   [src/constants/urls.ts](src/constants/urls.ts)). The order is shuffled per run
-  and up to four boards are merged so the headlines can take turns as the main
+  and up to six boards are merged so the headlines can take turns as the main
   topic; the self-hosted board (`http://192.168.31.214:6688/douyin`, `CN_TRENDS`)
-  is the backup and is only asked when every public board failed. The source is
-  prepended automatically when the account country resolves to `CN`, and a
-  bundled `zh` list backs the `local` source.
+  is the backup and is only asked when every public board failed. A CN run
+  searches those headlines only — no evergreen list, no RSS feeds — and skips Bing
+  expansion, because a real headline is a better query than a stitched-together
+  suggestion. The source is prepended automatically when the account country
+  resolves to `CN`.
 - CN-friendly defaults in [config.example.json](config.example.json) and
   [env.example](env.example): `headless: true`, `ACCOUNT_n_GEO_LOCALE=CN`,
   `ACCOUNT_n_LANG_CODE=zh-CN` and `queryEngines` including `customCN`.

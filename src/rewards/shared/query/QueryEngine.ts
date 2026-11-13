@@ -71,18 +71,27 @@ export class QueryEngine {
                         'QUERY-MANAGER',
                         `Source results | engine=${source} | topics=${topics.length} | language=${language} | country=${country}`
                     )
-                    return topics
+                    return { source, topics }
                 } catch (error) {
                     this.bot.logger.debug(
                         this.bot.isMobile,
                         'QUERY-MANAGER',
                         `Source unavailable | engine=${source} | language=${language} | country=${country} | ${String(error)}`
                     )
-                    return []
+                    return { source, topics: [] as QueryTopic[] }
                 }
             })
         )
-        const raw = lists.flat()
+        // The CN locale searches the hot-topic headlines and nothing else: they are real
+        // headlines, while the evergreen list and the RSS feeds read like filler.
+        const cnTopics = lists.find(entry => entry.source === 'customCN')?.topics ?? []
+        const cnOnly = country === 'CN' && cnTopics.length > 0
+        const raw = cnOnly ? cnTopics : lists.flatMap(entry => entry.topics)
+        this.bot.logger.debug(
+            this.bot.isMobile,
+            'QUERY-MANAGER',
+            `Pool selection | source=${cnOnly ? 'customCN-only' : 'all-engines'} | raw=${raw.length} | language=${language} | country=${country}`
+        )
         let topics = prepareTopics(raw, language, country)
         if (!topics.length) {
             topics = prepareTopics(this.sources.getLocalQueryList(language), language, country)
@@ -126,6 +135,17 @@ export class QueryEngine {
         const locale = resolveQueryLocale(this.bot)
         const { language, country } = locale
         const first: SearchQuery = { ...mainTopic, text: main, topic: mainTopic, locale }
+        // CN headlines are already complete queries. Expanding them with Bing suggestions only
+        // stitches fragments together ("秋冬落地签是一杯warm drink"), so the CN locale searches
+        // the headline verbatim and moves straight on to the next topic.
+        if (country === 'CN') {
+            this.bot.logger.debug(
+                this.bot.isMobile,
+                'QUERY-CLUSTER',
+                `Cluster skipped | main=${JSON.stringify(main)} | topicSource=${mainTopic.source} | reason=cn-headline`
+            )
+            return [first]
+        }
         if (!this.bot.config.searchSettings.clusterSearch) return [first]
         const results = await Promise.allSettled([
             this.sources.getBingSuggestions(main, language, country),

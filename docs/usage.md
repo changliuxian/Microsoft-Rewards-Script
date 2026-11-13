@@ -390,8 +390,8 @@ of public hot-topic boards and turns each headline into a `trend` topic.
   netease and zhihu. Every board answers `{"code": 200, "data": [{"title": "..."}]}`;
   the xxapi douyin board names the field `word` and is read as well.
 - The candidate order is shuffled on every run, and boards are merged until
-  `CN_HOT_BOARD_LIMIT` (4) of them answered, each contributing its leading
-  `CN_HOT_PER_BOARD` (12) titles. A single board would hand the search queue the
+  `CN_HOT_BOARD_LIMIT` (6) of them answered, each contributing its leading
+  `CN_HOT_PER_BOARD` (30) titles. A single board would hand the search queue the
   same list of headlines every run; merging a few keeps the pool wide enough for
   the topics to take turns as the main topic. A board that errors, answers a
   non-`200` code or returns no titles is skipped, and the cascade moves on to the
@@ -402,13 +402,19 @@ of public hot-topic boards and turns each headline into a `trend` topic.
   [src/constants/urls.ts](../src/constants/urls.ts); change the host/port to your
   own service. It must answer `GET /douyin?limit=100&cache=false` with
   `{"code": 200, "data": [{"title": "..."}]}`.
-- Trending headlines are ordinary `trend` topics, so they need no Bing expansion
-  to be searched: the headline itself is the first query of its cluster, and the
-  suggestion lookups only add a few related queries on top when Bing has any.
+- A CN run searches the hot-topic headlines and nothing else. When `customCN`
+  returned topics, the pool is built from them alone: the bundled evergreen list
+  and the RSS feeds are not mixed in, because a headline reads like a real search
+  while "今天有什么新闻" does not.
+- A CN run also skips Bing expansion. Each headline is already a complete query,
+  and asking Bing for suggestions only glues fragments together
+  (`秋冬落地签是一杯warm drink`). `getCluster` therefore returns the headline as the
+  single query of its cluster and the queue moves straight to the next topic, which
+  is why one headline is one search and the board limits above matter.
+  `clusterSearch` is still honoured for every other locale.
 - When the resolved country is `CN`, `customCN` is prepended to `queryEngines`
   automatically, even if the config omits it. Other sources keep running in
-  parallel, and the usual local-query fallback still applies when every source
-  comes back empty.
+  parallel and only take over when every CN board fails.
 - Every attempt logs under `SEARCH-CN-TRENDS`, naming the board that answered or
   failed. When all of them fail the source contributes no topics and the run
   continues on the remaining sources.

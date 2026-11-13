@@ -269,8 +269,11 @@ jobs:
                   src/constants/urls.ts|isBingHost
                   src/constants/urls.ts|bingOriginOf
                   src/rewards/shared/query/QueryEngine.ts|customCN
+                  src/rewards/shared/query/QueryEngine.ts|cn-headline
+                  src/rewards/shared/query/QueryEngine.ts|cnOnly
                   src/rewards/shared/query/QuerySources.ts|getCustomCNTrends
                   src/rewards/shared/query/CNHotSources.ts|fetchCNHotTopics
+                  src/rewards/shared/query/CNHotSources.ts|CN_HOT_BOARD_LIMIT
                   src/rewards/shared/search/SearchTypes.ts|CNTrends
                   src/rewards/browser/search/HumanTyping.ts|isBingHost
                   src/rewards/shared/http/BingClient.ts|isBingHost

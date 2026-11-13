@@ -10,8 +10,10 @@ export const CN_HOT_BUDGET_MS = 15 * 1000
 // search queue the same headlines every run and only a handful of distinct topics.
 // Several boards are merged instead, each contributing only its leading titles, so the
 // pool holds a spread of headlines that can take turns as the main topic.
-export const CN_HOT_BOARD_LIMIT = 4
-export const CN_HOT_PER_BOARD = 12
+// CN searches run without Bing expansion, so one headline is one search: the pool has to
+// be wide enough to cover a full search quota before the queue has to refill.
+export const CN_HOT_BOARD_LIMIT = 6
+export const CN_HOT_PER_BOARD = 30
 
 export type CNHotLogLevel = 'debug' | 'warn'
 
