@@ -1,10 +1,16 @@
-name: Publish to Docker Hub
+name: Publish images
 
-# Publishes the CN fork as a Docker image: after Upstream sync finishes (its own push
-# cannot trigger a workflow), and on every human push to v5. The registry is the source
-# of truth for the version counter, so the next tag is one past the highest v5.0.N tag
-# already published and `latest` always moves to the newest one. A commit that is
-# already published under its `sha-` tag is skipped, which makes re-runs harmless.
+# Publishes the CN fork as a container image from a single build to two registries:
+# Docker Hub (`changliuxian49/microsoft-rewards-script`) and GHCR
+# (`ghcr.io/<owner>/<repo>`), because Docker Hub pulls are slow from mainland China.
+# Both get the same tags, so either one can be pulled.
+#
+# Runs after Upstream sync finishes (its own push cannot trigger a workflow) and on
+# every human push to v5. The registries are the source of truth for the version
+# counter: the next tag is one past the highest v5.0.N tag already published and
+# `latest` always moves to the newest one. A commit that is already published under
+# its `sha-` tag in both registries is skipped, which makes re-runs harmless; a commit
+# that only reached one of them is completed under the tag it already owns.
 
 on:
     workflow_run:
@@ -32,6 +38,7 @@ on:
 
 permissions:
     contents: read
+    packages: write
 
 concurrency:
     group: dockerhub-publish
@@ -39,7 +46,7 @@ concurrency:
 
 env:
     DOCKER_BUILD_RECORD_UPLOAD: 'false'
-    DEFAULT_IMAGE: changliuxian49/microsoft-rewards-script
+    DEFAULT_DOCKER_IMAGE: changliuxian49/microsoft-rewards-script
 
 jobs:
     publish:
@@ -65,29 +72,32 @@ jobs:
                   source_branch="${INPUT_SOURCE_BRANCH:-v5}"
                   platforms="${INPUT_PLATFORMS:-linux/amd64,linux/arm64}"
                   dry_run="${INPUT_DRY_RUN:-false}"
-                  image="${DEFAULT_IMAGE,,}"
-                  configured=false
+                  docker_image="${DEFAULT_DOCKER_IMAGE,,}"
+                  ghcr_image="ghcr.io/${GITHUB_REPOSITORY,,}"
+                  hub_configured=false
                   if [ -n "${DOCKERHUB_USERNAME:-}" ] && [ -n "${DOCKERHUB_TOKEN:-}" ]; then
-                      configured=true
+                      hub_configured=true
                   else
-                      echo "::notice::DOCKERHUB_USERNAME and DOCKERHUB_TOKEN are unset; the publication is skipped."
+                      echo "::notice::DOCKERHUB_USERNAME and DOCKERHUB_TOKEN are unset; publishing to GHCR only."
                   fi
                   {
                       echo "SOURCE_BRANCH=${source_branch}"
                       echo "PLATFORMS=${platforms}"
                       echo "DRY_RUN=${dry_run}"
-                      echo "IMAGE=${image}"
+                      echo "DOCKER_IMAGE=${docker_image}"
+                      echo "GHCR_IMAGE=${ghcr_image}"
+                      echo "HUB_CONFIGURED=${hub_configured}"
                   } >> "$GITHUB_ENV"
                   {
                       echo "source_branch=${source_branch}"
                       echo "platforms=${platforms}"
                       echo "dry_run=${dry_run}"
-                      echo "image=${image}"
-                      echo "configured=${configured}"
+                      echo "docker_image=${docker_image}"
+                      echo "ghcr_image=${ghcr_image}"
+                      echo "hub_configured=${hub_configured}"
                   } >> "$GITHUB_OUTPUT"
 
             - name: Check out the source branch
-              if: steps.cfg.outputs.configured == 'true'
               uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
               with:
                   ref: ${{ steps.cfg.outputs.source_branch }}
@@ -95,110 +105,198 @@ jobs:
                   persist-credentials: false
 
             - name: Log in to Docker Hub
-              if: steps.cfg.outputs.configured == 'true'
+              if: steps.cfg.outputs.hub_configured == 'true'
               uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
               with:
                   username: ${{ secrets.DOCKERHUB_USERNAME }}
                   password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+            - name: Log in to GHCR
+              uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.actor }}
+                  password: ${{ github.token }}
+
             - name: Set up QEMU
-              if: steps.cfg.outputs.configured == 'true'
               uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
               with:
                   platforms: arm64
 
             - name: Set up Buildx
-              if: steps.cfg.outputs.configured == 'true'
               uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
             - name: Resolve the next version
               id: version
-              if: steps.cfg.outputs.configured == 'true'
               env:
                   DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
                   DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+                  GH_TOKEN: ${{ github.token }}
               run: |
                   set -euo pipefail
                   revision="$(git rev-parse HEAD)"
                   short="$(git rev-parse --short=7 HEAD)"
-                  namespace="${IMAGE%%/*}"
-                  repository="${IMAGE#*/}"
+
+                  has_tag() {
+                      docker buildx imagetools inspect "$1" >/dev/null 2>&1
+                  }
 
                   # The commit tag records what is already out: a second trigger for the
                   # same tree finds its own `sha-` tag and stops, so the version counter
                   # never advances twice for one commit.
-                  if docker buildx imagetools inspect "${IMAGE}:sha-${short}" >/dev/null 2>&1; then
-                      echo "${IMAGE}:sha-${short} already exists; nothing to publish."
+                  hub_sha=false
+                  if [ "${HUB_CONFIGURED}" = 'true' ] && has_tag "${DOCKER_IMAGE}:sha-${short}"; then
+                      hub_sha=true
+                  fi
+                  ghcr_sha=false
+                  if has_tag "${GHCR_IMAGE}:sha-${short}"; then
+                      ghcr_sha=true
+                  fi
+                  if [ "$hub_sha" = 'true' ] && [ "$ghcr_sha" = 'true' ]; then
+                      echo "sha-${short} is published to both registries; nothing to publish."
                       echo "state=current" >> "$GITHUB_OUTPUT"
                       exit 0
                   fi
-                  # The counter lives in the registry: the next version is one past the
-                  # highest existing v5.0.N tag, so a fresh repository starts at v5.0.0.
-                  # The registry answers for private repositories once the access token is
-                  # exchanged for a pull token; hub.docker.com is only a fallback because it
-                  # reports 404 for repositories it cannot show anonymously.
-                  auth=()
-                  if [ -n "${DOCKERHUB_USERNAME:-}" ] && [ -n "${DOCKERHUB_TOKEN:-}" ]; then
-                      auth=(-u "${DOCKERHUB_USERNAME}:${DOCKERHUB_TOKEN}")
+
+                  # One registry may hold this commit while the other missed it. Read the
+                  # version back out of the image it already owns instead of burning a new
+                  # number on the same tree.
+                  recover_version() {
+                      local ref="$1" repo="${1%:*}" digest labels
+                      digest="$(
+                          docker buildx imagetools inspect "$ref" --format '{{json .Manifest}}' 2>/dev/null |
+                              jq -r '[.manifests[]? | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest][0] // empty' 2>/dev/null ||
+                              true
+                      )"
+                      if [ -n "$digest" ]; then
+                          labels="$(docker buildx imagetools inspect "${repo}@${digest}" --format '{{json .Image}}' 2>/dev/null || true)"
+                      else
+                          labels="$(docker buildx imagetools inspect "$ref" --format '{{json .Image}}' 2>/dev/null || true)"
+                      fi
+                      [ -n "$labels" ] || return 1
+                      printf '%s' "$labels" | jq -r '.config.Labels["org.opencontainers.image.version"] // empty'
+                  }
+
+                  existing=''
+                  if [ "$hub_sha" = 'true' ]; then
+                      existing="$(recover_version "${DOCKER_IMAGE}:sha-${short}" || true)"
                   fi
+                  if [ -z "$existing" ] && [ "$ghcr_sha" = 'true' ]; then
+                      existing="$(recover_version "${GHCR_IMAGE}:sha-${short}" || true)"
+                  fi
+                  if printf '%s' "$existing" | grep -Eq '^v5\.0\.[0-9]+$'; then
+                      echo "Completing the publication of ${existing} for sha-${short}."
+                      {
+                          echo "state=publish"
+                          echo "revision=${revision}"
+                          echo "short=${short}"
+                          echo "version=${existing}"
+                      } >> "$GITHUB_OUTPUT"
+                      exit 0
+                  fi
+
+                  # The counter lives in the registries: the next version is one past the
+                  # highest existing v5.0.N tag across both of them, so a fresh repository
+                  # starts at v5.0.0. The Docker Hub registry answers for private
+                  # repositories once the access token is exchanged for a pull token;
+                  # hub.docker.com is only a fallback because it reports 404 for
+                  # repositories it cannot show anonymously.
                   : > tags.txt
                   queried=false
-                  token="$(
-                      curl -fsS --max-time 30 "${auth[@]}" \
-                          "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${namespace}/${repository}:pull" \
-                          2>/dev/null | jq -r '.token // ""' 2>/dev/null || true
-                  )"
-                  if [ -n "$token" ]; then
-                      page=1
-                      last=''
-                      while [ "$page" -le 10 ]; do
-                          url="https://registry-1.docker.io/v2/${namespace}/${repository}/tags/list?n=1000"
-                          if [ -n "$last" ]; then
-                              url="${url}&last=${last}"
-                          fi
-                          response="$(curl -fsS --max-time 30 -H "Authorization: Bearer ${token}" "$url" 2>/dev/null || true)"
-                          if [ -z "$response" ]; then
-                              break
-                          fi
-                          queried=true
-                          printf '%s' "$response" | jq -r '.tags[]?' >> tags.txt
-                          count="$(printf '%s' "$response" | jq -r '(.tags // []) | length')"
-                          if [ "$count" -lt 1000 ]; then
-                              break
-                          fi
-                          last="$(printf '%s' "$response" | jq -r '.tags[-1] // ""')"
-                          if [ -z "$last" ]; then
-                              break
-                          fi
-                          page=$((page + 1))
-                      done
+                  hub_tags=false
+                  if [ "${HUB_CONFIGURED}" = 'true' ]; then
+                      auth=(-u "${DOCKERHUB_USERNAME}:${DOCKERHUB_TOKEN}")
+                      namespace="${DOCKER_IMAGE%%/*}"
+                      repository="${DOCKER_IMAGE#*/}"
+                      token="$(
+                          curl -fsS --max-time 30 "${auth[@]}" \
+                              "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${namespace}/${repository}:pull" \
+                              2>/dev/null | jq -r '.token // ""' 2>/dev/null || true
+                      )"
+                      if [ -n "$token" ]; then
+                          page=1
+                          last=''
+                          while [ "$page" -le 10 ]; do
+                              url="https://registry-1.docker.io/v2/${namespace}/${repository}/tags/list?n=1000"
+                              if [ -n "$last" ]; then
+                                  url="${url}&last=${last}"
+                              fi
+                              response="$(curl -fsS --max-time 30 -H "Authorization: Bearer ${token}" "$url" 2>/dev/null || true)"
+                              if [ -z "$response" ]; then
+                                  break
+                              fi
+                              hub_tags=true
+                              queried=true
+                              printf '%s' "$response" | jq -r '.tags[]?' >> tags.txt
+                              count="$(printf '%s' "$response" | jq -r '(.tags // []) | length')"
+                              if [ "$count" -lt 1000 ]; then
+                                  break
+                              fi
+                              last="$(printf '%s' "$response" | jq -r '.tags[-1] // ""')"
+                              if [ -z "$last" ]; then
+                                  break
+                              fi
+                              page=$((page + 1))
+                          done
+                      fi
+                      if [ "$hub_tags" != 'true' ]; then
+                          page=1
+                          while [ "$page" -le 10 ]; do
+                              response="$(
+                                  curl -fsS --max-time 30 "${auth[@]}" \
+                                      "https://hub.docker.com/v2/repositories/${namespace}/${repository}/tags?page_size=100&page=${page}" \
+                                      2>/dev/null || true
+                              )"
+                              if [ -z "$response" ]; then
+                                  break
+                              fi
+                              queried=true
+                              printf '%s' "$response" | jq -r '.results[]?.name' >> tags.txt
+                              next="$(printf '%s' "$response" | jq -r '.next // ""')"
+                              if [ -z "$next" ] || [ "$next" = 'null' ]; then
+                                  break
+                              fi
+                              page=$((page + 1))
+                          done
+                      fi
                   fi
-                  if [ "$queried" != 'true' ]; then
+
+                  # GHCR is listed through the GitHub API: the package versions endpoint
+                  # is the only way to read every tag, and `packages: write` covers it.
+                  ghcr_tags=false
+                  if [ -n "${GH_TOKEN:-}" ]; then
+                      owner="${GITHUB_REPOSITORY%%/*}"
+                      package="${GHCR_IMAGE##*/}"
                       page=1
                       while [ "$page" -le 10 ]; do
                           response="$(
-                              curl -fsS --max-time 30 "${auth[@]}" \
-                                  "https://hub.docker.com/v2/repositories/${namespace}/${repository}/tags?page_size=100&page=${page}" \
+                              curl -fsS --max-time 30 -H "Authorization: Bearer ${GH_TOKEN}" \
+                                  -H 'Accept: application/vnd.github+json' \
+                                  "https://api.github.com/users/${owner}/packages/container/${package}/versions?per_page=100&page=${page}" \
                                   2>/dev/null || true
                           )"
                           if [ -z "$response" ]; then
                               break
                           fi
+                          ghcr_tags=true
                           queried=true
-                          printf '%s' "$response" | jq -r '.results[]?.name' >> tags.txt
-                          next="$(printf '%s' "$response" | jq -r '.next // ""')"
-                          if [ -z "$next" ] || [ "$next" = 'null' ]; then
+                          printf '%s' "$response" | jq -r '.[]?.metadata.container.tags[]?' >> tags.txt
+                          count="$(printf '%s' "$response" | jq -r 'length')"
+                          if [ "$count" -lt 100 ]; then
                               break
                           fi
                           page=$((page + 1))
                       done
                   fi
+
                   sort -u -o tags.txt tags.txt
                   echo "Published tags: $(tr '\n' ' ' < tags.txt)"
                   exists=false
                   if [ -s tags.txt ]; then
                       exists=true
-                  elif docker buildx imagetools inspect "${IMAGE}:latest" >/dev/null 2>&1; then
+                  elif has_tag "${GHCR_IMAGE}:latest"; then
+                      exists=true
+                  elif [ "${HUB_CONFIGURED}" = 'true' ] && has_tag "${DOCKER_IMAGE}:latest"; then
                       exists=true
                   fi
                   highest="$(
@@ -209,10 +307,10 @@ jobs:
                       ' tags.txt
                   )"
 
-                  # Never restart the counter over existing tags: if the tag list cannot be
-                  # read while the repository already has images, stop instead of guessing.
+                  # Never restart the counter over existing tags: if no tag list can be
+                  # read while a registry already has images, stop instead of guessing.
                   if [ "$queried" != 'true' ] && [ "$exists" = 'true' ]; then
-                      echo "The Docker Hub tag list is unreadable but the repository has images; refusing to guess the version." >&2
+                      echo "The tag lists are unreadable but images exist; refusing to guess the version." >&2
                       echo "state=version-unknown" >> "$GITHUB_OUTPUT"
                       exit 0
                   fi
@@ -231,6 +329,27 @@ jobs:
                       echo "Highest published tag is v5.0.${highest}; publishing ${version}."
                   fi
 
+            - name: Assemble the target tags
+              id: tags
+              if: steps.version.outputs.state == 'publish'
+              env:
+                  VERSION: ${{ steps.version.outputs.version }}
+                  SHORT: ${{ steps.version.outputs.short }}
+              run: |
+                  set -euo pipefail
+                  list="${GHCR_IMAGE}:${VERSION}
+                  ${GHCR_IMAGE}:sha-${SHORT}"
+                  if [ "${HUB_CONFIGURED}" = 'true' ]; then
+                      list="${DOCKER_IMAGE}:${VERSION}
+                  ${DOCKER_IMAGE}:sha-${SHORT}
+                  ${list}"
+                  fi
+                  {
+                      echo 'list<<TAGS'
+                      printf '%s\n' "$list"
+                      echo 'TAGS'
+                  } >> "$GITHUB_OUTPUT"
+
             - name: Build and push the image
               id: build
               if: steps.version.outputs.state == 'publish'
@@ -242,9 +361,7 @@ jobs:
                   # Attestation manifests carry an unknown/unknown platform that older
                   # container runtimes on NAS devices refuse to pull.
                   provenance: false
-                  tags: |
-                      ${{ steps.cfg.outputs.image }}:${{ steps.version.outputs.version }}
-                      ${{ steps.cfg.outputs.image }}:sha-${{ steps.version.outputs.short }}
+                  tags: ${{ steps.tags.outputs.list }}
                   cache-from: type=gha,version=2,scope=dockerhub-v5
                   cache-to: type=gha,version=2,scope=dockerhub-v5,mode=max
                   labels: |
@@ -260,7 +377,10 @@ jobs:
                   DIGEST: ${{ steps.build.outputs.digest }}
               run: |
                   set -euo pipefail
-                  docker buildx imagetools create --tag "${IMAGE}:latest" "${IMAGE}@${DIGEST}"
+                  docker buildx imagetools create --tag "${GHCR_IMAGE}:latest" "${GHCR_IMAGE}@${DIGEST}"
+                  if [ "${HUB_CONFIGURED}" = 'true' ]; then
+                      docker buildx imagetools create --tag "${DOCKER_IMAGE}:latest" "${DOCKER_IMAGE}@${DIGEST}"
+                  fi
                   echo "${VERSION} is published and latest points at it."
                   echo "state=published" >> "$GITHUB_OUTPUT"
 
@@ -268,8 +388,9 @@ jobs:
               if: always()
               env:
                   STATE: ${{ steps.promote.outputs.state || steps.version.outputs.state }}
-                  IMAGE_NAME: ${{ steps.cfg.outputs.image }}
-                  CONFIGURED: ${{ steps.cfg.outputs.configured }}
+                  DOCKER_IMAGE_NAME: ${{ steps.cfg.outputs.docker_image }}
+                  GHCR_IMAGE_NAME: ${{ steps.cfg.outputs.ghcr_image }}
+                  HUB: ${{ steps.cfg.outputs.hub_configured }}
                   VERSION: ${{ steps.version.outputs.version }}
                   SHORT: ${{ steps.version.outputs.short }}
                   TARGETS: ${{ steps.cfg.outputs.platforms }}
@@ -277,15 +398,17 @@ jobs:
               run: |
                   set -uo pipefail
                   state="${STATE:-unknown}"
-                  if [ "${CONFIGURED:-false}" != 'true' ]; then
-                      state="not-configured"
+                  hub_target="${DOCKER_IMAGE_NAME:-?}"
+                  if [ "${HUB:-false}" != 'true' ]; then
+                      hub_target="skipped (no Docker Hub credentials)"
                   fi
                   {
-                      echo "### Docker Hub publication"
+                      echo "### Container publication"
                       echo
                       echo "| Field | Value |"
                       echo "| --- | --- |"
-                      echo "| Image | \`${IMAGE_NAME:-?}\` |"
+                      echo "| GHCR | \`${GHCR_IMAGE_NAME:-?}\` |"
+                      echo "| Docker Hub | \`${hub_target}\` |"
                       echo "| State | \`${state}\` |"
                       echo "| Version | \`${VERSION:-none}\` |"
                       echo "| Commit | \`${SHORT:-?}\` |"

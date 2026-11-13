@@ -190,12 +190,13 @@ jobs:
                     args+=(--prerelease)
                   fi
                   gh release create "${args[@]}"
-            - name: Point the stable channels at this release
+            - name: Point the major channel at this release
               if: needs.prepare.outputs.prerelease != 'true'
               env:
                   IMAGE: ${{ needs.prepare.outputs.image }}
                   MAJOR: ${{ needs.prepare.outputs.major }}
                   DIGEST: ${{ steps.build.outputs.digest || steps.existing.outputs.digest }}
               run: |
+                  # `latest` belongs to the publication workflow, which moves it on every
+                  # push to v5; only the major channel is pinned to a release here.
                   docker buildx imagetools create --tag "$IMAGE:$MAJOR" "$IMAGE@$DIGEST"
-                  docker buildx imagetools create --tag "$IMAGE:latest" "$IMAGE@$DIGEST"
