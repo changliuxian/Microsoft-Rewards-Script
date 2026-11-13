@@ -369,7 +369,7 @@ jobs:
                       org.opencontainers.image.version=${{ steps.version.outputs.version }}
                       org.opencontainers.image.revision=${{ steps.version.outputs.revision }}
 
-            - name: Point latest at the new version
+            - name: Point the floating channels at the new version
               id: promote
               if: steps.version.outputs.state == 'publish' && steps.cfg.outputs.dry_run != 'true'
               env:
@@ -377,11 +377,17 @@ jobs:
                   DIGEST: ${{ steps.build.outputs.digest }}
               run: |
                   set -euo pipefail
-                  docker buildx imagetools create --tag "${GHCR_IMAGE}:latest" "${GHCR_IMAGE}@${DIGEST}"
-                  if [ "${HUB_CONFIGURED}" = 'true' ]; then
-                      docker buildx imagetools create --tag "${DOCKER_IMAGE}:latest" "${DOCKER_IMAGE}@${DIGEST}"
-                  fi
-                  echo "${VERSION} is published and latest points at it."
+                  # `v5.0.N` is one build; `latest` and the major channel follow it so a
+                  # puller never lands on an older tree than the newest published one.
+                  major="${VERSION#v}"
+                  major="${major%%.*}"
+                  for channel in latest "$major"; do
+                      docker buildx imagetools create --tag "${GHCR_IMAGE}:${channel}" "${GHCR_IMAGE}@${DIGEST}"
+                      if [ "${HUB_CONFIGURED}" = 'true' ]; then
+                          docker buildx imagetools create --tag "${DOCKER_IMAGE}:${channel}" "${DOCKER_IMAGE}@${DIGEST}"
+                      fi
+                  done
+                  echo "${VERSION} is published and latest plus ${major} point at it."
                   echo "state=published" >> "$GITHUB_OUTPUT"
 
             - name: Summarise
