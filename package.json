@@ -27,6 +27,8 @@
         "manual-login": "node ./scripts/main/manualLogin.js",
         "open-session": "node ./scripts/main/browserSession.js",
         "check:api": "tsc -p tsconfig.control-api.json",
+        "check:cn": "bash scripts/ci/check-cn-adaptation.sh",
+        "test:cn-sync": "bash scripts/ci/test-cn-sync.sh",
         "check": "npm run build && npm run check:api && npm run lint && npm run format:check"
     },
     "keywords": [

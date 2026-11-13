@@ -119,9 +119,15 @@ cannot place is retried without surrounding context, so an insertion survives an
 upstream edit right beside it. Only the last tier loses information: the run still
 succeeds, and the skipped upstream delta is quoted in a
 `Upstream sync skipped upstream changes on v5` issue so it can be ported by hand;
-that issue stays open until you close it. A separate guard re-checks the CN markers
-in the merged tree, so an adaptation that upstream silently dropped also stops the
-sync instead of disappearing.
+that issue stays open until you close it. A path upstream deleted or renamed away
+outright is restored from the fork and reported the same way, so a file that
+carries CN behaviour cannot vanish without a trace.
+
+The marker list lives in [`scripts/ci/cn-adaptation.txt`](scripts/ci/cn-adaptation.txt)
+and the merge in [`scripts/ci/merge-upstream.sh`](scripts/ci/merge-upstream.sh), so
+both can be run locally: `npm run check:cn` verifies the markers and
+`npm run test:cn-sync` replays the clean, distant, same-line, deleted-file and
+guard scenarios against throwaway repositories. CI runs both on every push.
 
 ### Promoting to main
 

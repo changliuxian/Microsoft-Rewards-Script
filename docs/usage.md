@@ -463,11 +463,25 @@ skipped upstream delta is quoted in a `Upstream sync skipped upstream changes on
 v5` issue so it can be ported by hand. That issue stays open until you close it,
 because a later run cannot tell whether the port happened.
 
-A guard step then re-checks the CN markers (`customCN` in the config schema and the
-query engine, `CN_HOT_APIS` and `customCNTrends` in the URL table, the `zh` query
-list, the `CN` defaults, the `Asia/Shanghai` compose timezone and the CN docs).
-A missing marker stops the sync with `state: missing`, so an adaptation that
-upstream silently dropped cannot disappear unnoticed.
+A guard step then re-checks the CN markers listed in
+[`scripts/ci/cn-adaptation.txt`](../scripts/ci/cn-adaptation.txt) (`customCN` in the
+config schema and the query engine, `CN_HOT_APIS`, `customCNTrends` and `isBingHost`
+in the URL table, the `zh` query list, the `CN` defaults, the `Asia/Shanghai`
+compose timezone, the CN docs and every `isBingHost`/`bingOriginOf` call site). A
+missing marker stops the sync with `state: missing`, so an adaptation that upstream
+silently dropped cannot disappear unnoticed.
+
+A file upstream deletes or renames away outright would drop CN behaviour without any
+conflict to resolve, so the merge script restores every listed file that vanished and
+reports it under `restored`. Those paths join the review issue as well, because the
+upstream change that removed them still needs a human decision.
+
+The merge lives in [`scripts/ci/merge-upstream.sh`](../scripts/ci/merge-upstream.sh)
+and the marker list in [`scripts/ci/cn-adaptation.txt`](../scripts/ci/cn-adaptation.txt),
+so both run outside CI: `npm run check:cn` verifies the markers on the working tree
+and `npm run test:cn-sync` replays the clean, distant, same-line, deleted-file and
+guard scenarios against throwaway repositories. `validate.yml` runs both on every
+push, which means a change to the sync logic is proven before it can touch `v5`.
 
 After a merge the workflow runs `npm ci`, `npm run build`, `npm run check:api`,
 `npm run lint` and `npm run format:check` on the merged tree. Only a tree that

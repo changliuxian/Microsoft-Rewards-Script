@@ -34,6 +34,10 @@ jobs:
                   cache: npm
             - name: Install locked dependencies
               run: npm ci --include=dev --ignore-scripts
+            - name: Check the CN adaptation and its sync logic
+              run: |
+                  npm run check:cn
+                  npm run test:cn-sync
             - name: Build, type check, lint and check formatting
               run: |
                   npm run build

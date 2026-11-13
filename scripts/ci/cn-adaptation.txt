@@ -1,0 +1,38 @@
+# The CN adaptation, as path|needle pairs.
+#
+# Every line is one assertion about the merged tree: the file must exist and must
+# still contain the needle. `scripts/ci/check-cn-adaptation.sh` fails the sync when
+# any of them is gone, and `scripts/ci/merge-upstream.sh` re-creates a listed file
+# that upstream deleted or renamed away.
+#
+# Keep the needles short and specific: they are grepped with -F, not parsed.
+src/config/Config.ts|customCN
+src/config/Validator.ts|customCN
+src/config/Defaults.ts|customCN
+src/constants/urls.ts|CN_HOT_APIS
+src/constants/urls.ts|customCNTrends
+src/constants/urls.ts|isBingHost
+src/constants/urls.ts|bingOriginOf
+src/rewards/shared/query/QueryEngine.ts|customCN
+src/rewards/shared/query/QueryEngine.ts|cn-headline
+src/rewards/shared/query/QueryEngine.ts|cnOnly
+src/rewards/shared/query/QuerySources.ts|getCustomCNTrends
+src/rewards/shared/query/CNHotSources.ts|fetchCNHotTopics
+src/rewards/shared/query/CNHotSources.ts|CN_HOT_BOARD_LIMIT
+src/rewards/shared/search/SearchTypes.ts|CNTrends
+src/rewards/browser/search/HumanTyping.ts|isBingHost
+src/rewards/shared/http/BingClient.ts|isBingHost
+src/rewards/shared/visual/VisualSearchCandidate.ts|isBingHost
+src/rewards/browser/visual/VisualSearchPage.ts|isBingHost
+src/rewards/api/visual/VisualSearchClient.ts|bingOriginOfPage
+src/rewards/api/search/BingSearchApi.ts|bingOriginOf
+src/rewards/api/actions/FlyoutActivityReport.ts|bingOriginOf
+src/rewards/browser/actions/BrowserRewardNavigator.ts|isOnFlyout
+src/core/RunCoordinator.ts|isBingHost
+src/data/search-queries.json|"zh"
+config.example.json|customCN
+env.example|GEO_LOCALE=CN
+compose.yaml|Asia/Shanghai
+Dockerfile|NODE_IMAGE
+README.md|customCN
+docs/usage.md|customCN
