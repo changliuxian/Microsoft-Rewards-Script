@@ -9,7 +9,7 @@ import { remainingSearchOnBingAttempts, runSearchOnBingQueries } from '../../sha
 import { getSearchOnBingQueries } from '../../shared/search/SearchOnBingQueries'
 import { isPromotionComplete } from '../../shared/PromotionEligibility'
 import { BrowserTaskPage } from '../../../browser/BrowserTaskPage'
-import { URLs } from '../../../constants/urls'
+import { isBingHost } from '../../../constants/urls'
 import { isTerminalHttpError } from '../../../network/HttpError'
 
 import type { BasePromotion } from '../../types/RewardsState'
@@ -89,7 +89,7 @@ export class BrowserSearchOnBing extends BaseActivity {
             `Activation click finished | offerId=${offerId} | report=${report ? 'accepted' : 'not-observed'} | next=search`
         )
         const current = new URL(page.url())
-        const isSearchPage = current.origin === URLs.bing.origin && ['/', '/search'].includes(current.pathname)
+        const isSearchPage = isBingHost(current.hostname) && ['/', '/search'].includes(current.pathname)
 
         const task = await BrowserTaskPage.create(page, isSearchPage)
         let success: boolean

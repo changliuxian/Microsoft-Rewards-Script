@@ -4,7 +4,7 @@ import { browserTimeout } from '../../../browser/BrowserTiming'
 import { BrowserTaskPage } from '../../../browser/BrowserTaskPage'
 import type { Locator, Page, Response } from 'patchright'
 
-import { URLs } from '../../../constants/urls'
+import { isBingHost, URLs } from '../../../constants/urls'
 import type { BotContext } from '../../../core/BotContext'
 import type { VisualSearchCandidate } from '../../types/VisualSearchTypes'
 import { parseBingSearchReport, type BingSearchReport } from '../../shared/search/BingSearchReport'
@@ -183,8 +183,16 @@ export class VisualSearchPage {
         }
 
         if (collected.length) {
-            const preferred = collected.filter(seed => seed.startsWith(`${URLs.bing.origin}/th?`))
-            const fallback = collected.filter(seed => !seed.startsWith(`${URLs.bing.origin}/th?`))
+            const isThumbnailSeed = (seed: string): boolean => {
+                try {
+                    const url = new URL(seed)
+                    return isBingHost(url.hostname) && url.pathname.toLowerCase() === '/th'
+                } catch {
+                    return false
+                }
+            }
+            const preferred = collected.filter(isThumbnailSeed)
+            const fallback = collected.filter(seed => !isThumbnailSeed(seed))
             this.bot.utils.shuffleArray(preferred)
             this.bot.utils.shuffleArray(fallback)
             const selected = [...preferred, ...fallback].slice(0, DOM_SEED_LIMIT)
@@ -239,14 +247,15 @@ export class VisualSearchPage {
             if (url.protocol !== 'https:') return null
 
             const host = url.hostname.toLowerCase()
-            if (host !== 'www.bing.com' && host !== 'bing.com' && host !== 'th.bing.com') return null
+            if (!isBingHost(host)) return null
 
             const hasThumbnailId = Boolean(url.searchParams.get('id'))
             const isThumbnailPath = url.pathname.toLowerCase() === '/th'
             if (!isThumbnailPath || !hasThumbnailId) return null
 
             url.protocol = 'https:'
-            url.hostname = 'www.bing.com'
+            // Keep whichever Bing host the feed used; rewriting it to www.bing.com adds a
+            // redirect for every thumbnail when the browser is on the regional host.
             return url.toString()
         } catch {
             return null
@@ -408,7 +417,7 @@ export class VisualSearchPage {
         if (response.request().method() !== 'POST') return false
         try {
             const url = new URL(response.url())
-            return url.origin === URLs.bing.origin && url.pathname.toLowerCase() === '/rewardsapp/reportactivity'
+            return isBingHost(url.hostname) && url.pathname.toLowerCase() === '/rewardsapp/reportactivity'
         } catch {
             return false
         }

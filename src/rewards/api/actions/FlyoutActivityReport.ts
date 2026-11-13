@@ -3,7 +3,7 @@ import type { BotContext } from '../../../core/BotContext'
 import type { BasePromotion } from '../../types/RewardsState'
 import type { RawPromotion } from '../../shared/Promotion'
 import type { RewardsFlyoutData } from '../../shared/data/FlyoutTypes'
-import { URLs } from '../../../constants/urls'
+import { bingOriginOf, URLs } from '../../../constants/urls'
 import { extractFlyoutViewModel } from '../../browser/parsers/FlyoutPageParser'
 import { mergeRequestHeaders } from '../../../network/HttpClient'
 import { localeRequestHeaders } from '../../../network/RequestHeaders'
@@ -43,6 +43,10 @@ export class FlyoutActivityReport {
         if (page.status < 200 || page.status >= 300 || typeof page.data !== 'string')
             throw new Error(`Flyout page returned status ${page.status}`)
 
+        // The flyout redirects to the regional Bing host, so the report has to be aimed at
+        // the host that actually served it rather than the one we asked for.
+        const bingOrigin = bingOriginOf(page.url ?? URLs.bing.rewardsFlyoutPage)
+
         const model = extractFlyoutViewModel(page.data)
         const card = findCard(model, promotion.offerId)
         const userId = model.userId
@@ -56,15 +60,15 @@ export class FlyoutActivityReport {
         }
 
         const response = await this.bot.sessionState.browserRequest<unknown>({
-            url: URLs.bing.rewardsFlyoutReportActivity,
+            url: `${bingOrigin}/msrewards/api/v1/reportactivity`,
             method: 'POST',
             headers: mergeRequestHeaders(
                 {
                     ...locale,
                     Accept: '*/*',
                     'Content-Type': 'application/json',
-                    Origin: URLs.bing.origin,
-                    Referer: URLs.bing.rewardsFlyoutPage
+                    Origin: bingOrigin,
+                    Referer: `${bingOrigin}/rewards/panelflyout`
                 },
                 identity
             ),

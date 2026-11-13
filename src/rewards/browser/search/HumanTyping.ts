@@ -1,6 +1,6 @@
 import { ghostClick } from '../../../browser/GhostClick'
 import type { Locator, Page } from 'patchright'
-import { URLs } from '../../../constants/urls'
+import { isBingHost } from '../../../constants/urls'
 
 const KEY_DELAY_MS = 70
 const PRE_FOCUS_PAUSE_MS = 600
@@ -38,16 +38,25 @@ export async function submitSearch(
     if ((await searchBox.inputValue({ timeout: remaining() })) !== query) {
         await searchBox.fill(query, { timeout: remaining() })
     }
-    await Promise.all([
-        page.waitForURL(
-            url =>
-                url.origin === URLs.bing.origin &&
-                url.pathname === '/search' &&
-                normalize(url.searchParams.get('q') ?? '') === normalize(query),
-            { waitUntil: 'commit', timeout: remaining() }
-        ),
-        searchBox.press('Enter', { timeout: remaining() })
-    ])
+    try {
+        await Promise.all([
+            page.waitForURL(
+                url =>
+                    isBingHost(url.hostname) &&
+                    url.pathname === '/search' &&
+                    normalize(url.searchParams.get('q') ?? '') === normalize(query),
+                { waitUntil: 'commit', timeout: remaining() }
+            ),
+            searchBox.press('Enter', { timeout: remaining() })
+        ])
+    } catch (error) {
+        // The host and the path are what usually drift, so name them in the failure.
+        const landed = page.isClosed() ? '<closed>' : page.url()
+        const message = error instanceof Error ? error.message : String(error)
+        throw new Error(`${message} | expected=${JSON.stringify(query)} on *.bing.com/search | landed=${landed}`, {
+            cause: error
+        })
+    }
 
     await page.locator('#b_results').waitFor({ state: 'visible', timeout: remaining() })
     remaining()

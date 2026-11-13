@@ -266,10 +266,14 @@ jobs:
                   src/config/Defaults.ts|customCN
                   src/constants/urls.ts|CN_HOT_APIS
                   src/constants/urls.ts|customCNTrends
+                  src/constants/urls.ts|isBingHost
+                  src/constants/urls.ts|bingOriginOf
                   src/rewards/shared/query/QueryEngine.ts|customCN
                   src/rewards/shared/query/QuerySources.ts|getCustomCNTrends
                   src/rewards/shared/query/CNHotSources.ts|fetchCNHotTopics
                   src/rewards/shared/search/SearchTypes.ts|CNTrends
+                  src/rewards/browser/search/HumanTyping.ts|isBingHost
+                  src/rewards/shared/http/BingClient.ts|isBingHost
                   src/data/search-queries.json|"zh"
                   config.example.json|customCN
                   env.example|GEO_LOCALE=CN

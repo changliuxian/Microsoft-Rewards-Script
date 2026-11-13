@@ -1,11 +1,11 @@
-import { URLs } from '../../../constants/urls'
+import { isBingHost, URLs } from '../../../constants/urls'
 import type { VisualSearchCandidate } from '../../types/VisualSearchTypes'
 
 export function parseVisualSearchCandidate(raw: string): VisualSearchCandidate | null {
     try {
         const url = new URL(raw, URLs.bing.origin)
         if (
-            url.origin !== URLs.bing.origin ||
+            !isBingHost(url.hostname) ||
             url.username ||
             url.password ||
             !['/search', '/images/search'].includes(url.pathname.replace(/\/$/, ''))

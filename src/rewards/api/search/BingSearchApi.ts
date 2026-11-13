@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
 
-import { URLs } from '../../../constants/urls'
+import { bingOriginOf, URLs } from '../../../constants/urls'
 import type { BotContext } from '../../../core/BotContext'
 import { BingClient } from '../../shared/http/BingClient'
 import type { VisualSearchCandidate } from '../../types/VisualSearchTypes'
@@ -67,7 +67,10 @@ export class BingSearchApi {
         if (options.cg) params.set('cg', options.cg)
         if (options.bcid) params.set('bcid', options.bcid)
 
-        const reportUrl = `${URLs.bing.origin}/rewardsapp/reportActivity?${params.toString()}`
+        // Bing may serve the SERP from a different host than the one we asked for, and the
+        // report endpoint only answers on the host the search actually landed on.
+        const bingOrigin = bingOriginOf(searchResponse.url ?? searchUrl)
+        const reportUrl = `${bingOrigin}/rewardsapp/reportActivity?${params.toString()}`
         const reportResponse = await this.client.request<string>({
             url: reportUrl,
             method: 'POST',
@@ -75,7 +78,7 @@ export class BingSearchApi {
                 Accept: '*/*',
                 'Content-Type': 'application/x-www-form-urlencoded',
                 Referer: searchUrl,
-                Origin: URLs.bing.origin,
+                Origin: bingOrigin,
                 'X-Requested-With': 'XMLHttpRequest'
             },
             data: new URLSearchParams({ url: searchUrl, V: 'web' }).toString(),

@@ -100,3 +100,36 @@ export const URLs = {
 export const CN_HOT_SOURCES = CN_HOT_APIS
 
 export const REWARDS_BASE_URL = URLs.rewards.origin
+
+// Bing answers on several hosts. Traffic from mainland China is redirected to
+// cn.bing.com, traffic from anywhere else is redirected back to www.bing.com, so a
+// caller must never assume which one it ends up on. Accept the whole family.
+export function isBingHost(hostname: string): boolean {
+    const host = hostname.toLowerCase()
+    return host === 'bing.com' || host.endsWith('.bing.com')
+}
+
+// Hosts that serve the search, report and flyout endpoints. rewards.bing.com and
+// th.bing.com are Bing hosts but not part of that family, so they never become a
+// request origin.
+const BING_SEARCH_HOSTS = new Set(['bing.com', 'www.bing.com', 'cn.bing.com'])
+
+export function isBingSearchHost(hostname: string): boolean {
+    return BING_SEARCH_HOSTS.has(hostname.toLowerCase())
+}
+
+// Origin to build Bing requests against: keep whatever host the browser is actually
+// on, and fall back to the default only when the input is not a search host.
+export function bingOriginOf(url: string | URL): string {
+    const { origin } = typeof url === 'string' ? new URL(url) : url
+    return isBingSearchHost(new URL(origin).hostname) ? origin : URLs.bing.origin
+}
+
+// Same, for pages, which may be closed or carry an opaque about:blank URL.
+export function bingOriginOfPage(page: { url(): string }): string {
+    try {
+        return bingOriginOf(page.url())
+    } catch {
+        return URLs.bing.origin
+    }
+}
