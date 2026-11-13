@@ -14,3 +14,4 @@ note
 .env.*
 *.bak
 *.log
+运行日志.txt

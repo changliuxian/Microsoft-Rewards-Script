@@ -389,14 +389,22 @@ of public hot-topic boards and turns each headline into a `trend` topic.
   and `hotapi.nntool.cc`, covering weibo, douyin, baidu, toutiao, thepaper, qq,
   netease and zhihu. Every board answers `{"code": 200, "data": [{"title": "..."}]}`;
   the xxapi douyin board names the field `word` and is read as well.
-- The candidate order is shuffled on every run, and the first board that returns
-  usable titles wins. A board that errors, answers a non-`200` code or returns no
-  titles is skipped, and the cascade moves on to the next one. The whole cascade
-  shares a 15 second budget so a wall of dead endpoints cannot stall the run.
-- The self-hosted board is the backup and always comes last. Its endpoint is
-  `CN_TRENDS` in [src/constants/urls.ts](../src/constants/urls.ts); change the
-  host/port to your own service. It must answer
-  `GET /douyin?limit=100&cache=false` with `{"code": 200, "data": [{"title": "..."}]}`.
+- The candidate order is shuffled on every run, and boards are merged until
+  `CN_HOT_BOARD_LIMIT` (4) of them answered, each contributing its leading
+  `CN_HOT_PER_BOARD` (12) titles. A single board would hand the search queue the
+  same list of headlines every run; merging a few keeps the pool wide enough for
+  the topics to take turns as the main topic. A board that errors, answers a
+  non-`200` code or returns no titles is skipped, and the cascade moves on to the
+  next one. The whole cascade shares a 15 second budget so a wall of dead
+  endpoints cannot stall the run.
+- The self-hosted board is the backup and is only asked when every public board
+  failed. Its endpoint is `CN_TRENDS` in
+  [src/constants/urls.ts](../src/constants/urls.ts); change the host/port to your
+  own service. It must answer `GET /douyin?limit=100&cache=false` with
+  `{"code": 200, "data": [{"title": "..."}]}`.
+- Trending headlines are ordinary `trend` topics, so they need no Bing expansion
+  to be searched: the headline itself is the first query of its cluster, and the
+  suggestion lookups only add a few related queries on top when Bing has any.
 - When the resolved country is `CN`, `customCN` is prepended to `queryEngines`
   automatically, even if the config omits it. Other sources keep running in
   parallel, and the usual local-query fallback still applies when every source
