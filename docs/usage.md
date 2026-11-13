@@ -490,30 +490,39 @@ byte-identical to the already-verified `v5`. The issue closes itself once a
 later run reaches `current` or `pushed`. Manual runs accept `source_branch`,
 `target_branch` and `dry_run`.
 
-#### Publishing images to Docker Hub
+#### Publishing images
 
 [`.github/workflows/dockerhub-publish.yml`](../.github/workflows/dockerhub-publish.yml)
 builds `v5` on each push to `v5` and after every successful Upstream sync run,
-then pushes the multi-architecture image to
-`changliuxian49/microsoft-rewards-script`. The build runs on a GitHub-hosted
+then pushes that one build to two registries. The build runs on a GitHub-hosted
 runner; nothing is built locally.
 
-| Publication state | Meaning                                                                 |
-| ----------------- | ----------------------------------------------------------------------- |
-| `publish`         | A new `v5.0.N` tag is built; `latest` is moved to it afterwards.        |
-| `published`       | The image is pushed and `latest` points at the new digest.              |
-| `current`         | This commit already has a `sha-<7>` tag; nothing is published.          |
-| `version-unknown` | The tag list is unreadable but images exist; the counter is left alone. |
-| `not-configured`  | The Docker Hub secrets are missing; the run stops after a notice.       |
+| Registry   | Image                                           | Credentials                          |
+| ---------- | ----------------------------------------------- | ------------------------------------ |
+| GHCR       | `ghcr.io/changliuxian/microsoft-rewards-script` | `GITHUB_TOKEN`, nothing to configure |
+| Docker Hub | `changliuxian49/microsoft-rewards-script`       | `DOCKERHUB_USERNAME` + token secret  |
 
-The version counter lives in the registry rather than in `package.json`, so the
-first publication is `v5.0.0` and every later one increments the highest
-existing `v5.0.N`. Two repository secrets are required: `DOCKERHUB_USERNAME`
-(the Docker Hub account name) and `DOCKERHUB_TOKEN` (an access token created
-under **Account settings → Security → New access token** with read and write
-scope). The `sha-<7>` tag makes a repeated run for the same commit a no-op, so a
-re-run never advances the counter. Manual runs accept `source_branch`,
-`platforms` and `dry_run`.
+GHCR is the fallback for slow Docker Hub pulls from mainland China: both
+registries receive the same `v5.0.N`, `sha-<7>` and `latest` tags from the same
+build, so either reference resolves to the same image.
+
+| Publication state | Meaning                                                                   |
+| ----------------- | ------------------------------------------------------------------------- |
+| `publish`         | A new `v5.0.N` tag is built; `latest` is moved to it afterwards.          |
+| `published`       | The image is pushed and `latest` points at the new digest.                |
+| `current`         | This commit already has a `sha-<7>` tag in both registries; nothing runs. |
+| `version-unknown` | No tag list is readable but images exist; the counter is left alone.      |
+
+The version counter lives in the registries rather than in `package.json`, so the
+first publication is `v5.0.0` and every later one increments the highest existing
+`v5.0.N` across both. Docker Hub needs two repository secrets:
+`DOCKERHUB_USERNAME` (the account name) and `DOCKERHUB_TOKEN` (an access token
+created under **Account settings → Security → New access token** with read and
+write scope); without them the run publishes to GHCR only and logs a notice. The
+`sha-<7>` tag makes a repeated run for the same commit a no-op, so a re-run never
+advances the counter, and a commit that only reached one registry is completed in
+the other under the same version instead of taking a new number. Manual runs
+accept `source_branch`, `platforms` and `dry_run`.
 
 The image deliberately carries no account data: `.dockerignore` keeps `.env`,
 `config.json`, the mounted folders and the session databases out of the build
