@@ -166,6 +166,9 @@ fi
 # gone but still exists on the fork tip.
 if [ -f "${marker_list}" ]; then
     while IFS='|' read -r path _needle; do
+        # core.autocrlf hands the list back with CRLF on Windows; strip it or the
+        # path never matches a real file.
+        path="${path%$'\r'}"
         case "${path}" in
             '' | '#'*) continue ;;
         esac

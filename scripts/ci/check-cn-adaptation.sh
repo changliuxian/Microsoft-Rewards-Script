@@ -38,6 +38,10 @@ fi
 missing=0
 checked=0
 while IFS='|' read -r path needle; do
+    # A Windows checkout with core.autocrlf hands the list back with CRLF, which
+    # would otherwise be glued to the needle and make every marker look missing.
+    path="${path%$'\r'}"
+    needle="${needle%$'\r'}"
     case "${path}" in
         '' | '#'*) continue ;;
     esac
